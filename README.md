@@ -2,6 +2,18 @@
 
 Tito is a small, draggable desktop cat for macOS and Windows. He stays above ordinary app windows. Click him to reveal a compact glass toolbar with Chat and Settings; the chat panel appears only when opened from the pet.
 
+## Instructions for an AI assistant
+
+If a user asks you to install Tito from this repository, follow these steps:
+
+1. Check which operating system and processor the computer uses. Choose the matching macOS or Windows steps below; do not use the Windows package on a Mac or the Mac package on Windows.
+2. Open the [Build Tito desktop apps workflow](https://github.com/wvahub/tito-desktop-pet/actions/workflows/build.yml). If the repository is private and you cannot access it, explain that the owner must grant your signed-in GitHub account access. Do not try to get around the access restriction.
+3. If a recent successful workflow run has the needed artifact, download it. Otherwise, select **Run workflow** on the `main` branch and wait for both platform jobs to finish. Download only the artifact for this computer. GitHub removes workflow artifacts after a limited time.
+4. Install using the matching macOS or Windows instructions below. Explain any operating system warning about the unsigned app, and follow the platform's security and confirmation rules; do not silently bypass a warning.
+5. Finish by telling the user where Tito was installed and how to open him. Do not ask the user to send an AI assistant an API key; provider keys belong in Tito's **Settings** on the user's computer.
+
+If you cannot access GitHub Actions or the user does not want to run a workflow, explain the **Build from source** option instead. The source build requires Node.js and a terminal, so do not present it as a one-click installer.
+
 ## Install a ready-to-use build
 
 The repository builds installers with GitHub Actions. After opening the [Actions tab](https://github.com/wvahub/tito-desktop-pet/actions):
@@ -52,7 +64,7 @@ Tito stores API keys encrypted with Electron `safeStorage` (macOS Keychain or Wi
 
 ## Pet behavior
 
-Tito's mood responds to local time, battery when available, and Barcelona weather. Weather-dependent moods continue with the last fetched conditions if the network is unavailable. When the cursor has not moved over Tito for 2 minutes, each mood uses its selected frame loop. After 5 minutes he freezes on the chosen resting frame. Moving the cursor over him wakes the normal three-frame animation. Joy changes frames every 15 seconds, anger every 5 seconds, and sick holds frame 3 for 2 idle minutes before switching to frame 1. The exact frame choices are in [`Aura-animation-guide.svg`](Aura-animation-guide.svg).
+Tito's mood responds to local time, battery when available, and Barcelona weather. Weather-dependent moods continue with the last fetched conditions if the network is unavailable. When the cursor has not moved over Tito for 2 minutes, each mood uses its selected frame loop. After 5 minutes he freezes on the chosen resting frame. Moving the cursor over him wakes the normal three-frame animation. Joy changes frames every 15 seconds, anger every 5 seconds, and sick holds frame 3 for 2 idle minutes before switching to frame 1. The exact frame choices are in [Aura-animation-guide.svg](Aura-animation-guide.svg).
 
 The mood priority is low battery (when the system exposes that reading), special dates, nighttime, thunderstorms, heat, heavy rain or snow, drizzle, sunny weekends, Monday mornings, meal times, clear daytime, cloudy mornings, evening, then idle. Weather is currently read for Barcelona.
 
