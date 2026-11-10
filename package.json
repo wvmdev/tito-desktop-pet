@@ -1,0 +1,51 @@
+{
+  "name": "tito-desktop-pet",
+  "version": "1.0.0",
+  "description": "Tito, a small animated desktop companion for macOS and Windows",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "test": "node --test",
+    "dist:mac": "electron-builder --mac dmg",
+    "dist:win": "electron-builder --win nsis zip --x64"
+  },
+  "devDependencies": {
+    "electron": "^45.2.3",
+    "electron-builder": "^26.08.0"
+  },
+  "build": {
+    "appId": "com.tito.desktop",
+    "productName": "Tito",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "index.html",
+      "styles.css",
+      "pet-behavior.js",
+      "renderer.js",
+      "main.js",
+      "preload.js",
+      "assets/**/*"
+    ],
+    "mac": {
+      "category": "public.app-category.lifestyle",
+      "target": [
+        "dmg"
+      ]
+    },
+    "win": {
+      "target": [
+        "nsis",
+        "zip"
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    }
+  },
+  "engines": {
+    "node": ">=24"
+  }
+}
