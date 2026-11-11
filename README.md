@@ -6,9 +6,9 @@ Tito is an open-source desktop cat for Windows 10/11 (x64) and macOS on Apple si
 
 Ready-to-install files are attached to the [latest GitHub release](https://github.com/wvmdev/tito-desktop-pet/releases/latest):
 
-- **macOS (Apple silicon):** download `Tito-1.0.0-mac-arm64.dmg`, open it, and drag **Tito** into **Applications**.
-- **Windows 10/11 (x64):** download `Tito-Setup-1.0.0-win-x64.exe` and run the installer. It creates Start Menu and desktop shortcuts. The portable ZIP is also available as `Tito-portable-1.0.0-win-x64.zip`.
-- **Source:** download `Tito-source-1.0.0.zip`, or clone this repository.
+- **macOS (Apple silicon):** download `Tito-1.0.1-mac-arm64.dmg`, open it, and drag **Tito** into **Applications**.
+- **Windows 10/11 (x64):** download `Tito-Setup-1.0.1-win-x64.exe` and run the installer. It creates Start Menu and desktop shortcuts. The portable ZIP is also available as `Tito-portable-1.0.1-win-x64.zip`.
+- **Source:** download `Tito-source-1.0.1.zip`, or clone this repository.
 
 The desktop builds are unsigned because no developer signing certificates are configured. Windows SmartScreen or macOS Gatekeeper may identify an unsigned build. Review the source and release checksums before installing, or build it yourself from source. The GitHub Actions workflow also builds native Windows and macOS packages.
 
