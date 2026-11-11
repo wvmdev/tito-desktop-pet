@@ -1,6 +1,6 @@
 # Tito — desktop cat companion
 
-Tito is an open-source desktop cat for Windows 10/11 (x64) and macOS on Apple silicon. The transparent cat stays above ordinary windows. Click Tito to open Chat and Settings, drag him to move him, and use the Tito app menu to quit on macOS. On Windows, use Ctrl+Q or close Tito from the taskbar.
+Tito is an open-source desktop cat for Windows 10/11 (x64) and macOS on Apple silicon. The transparent cat stays above ordinary windows. Click Tito to open Chat and Settings, drag him to move him, and right-click the cat for **Hide Tito** or **Quit Tito**. To show a hidden pet on macOS, click Tito in the Dock. On Windows, launch Tito again from Start or its shortcut; the running app will show the pet.
 
 ## Download and install
 

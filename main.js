@@ -10,6 +10,15 @@ const positionPath = () => path.join(app.getPath('userData'), 'pet-position.json
 const providers = new Set(['openai', 'anthropic', 'gemini', 'openrouter', 'compatible']);
 const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
 
+if (!app.requestSingleInstanceLock()) {
+  app.quit();
+} else {
+  app.on('second-instance', () => {
+    if (!petWindow || petWindow.isDestroyed()) createPet();
+    else { if (petWindow.isMinimized()) petWindow.restore(); petWindow.show(); petWindow.focus(); }
+  });
+}
+
 function currentSize() {
   const w = Math.round(baseSize.width * scale), h = Math.round(baseSize.height * scale);
   if (panelMode === 'closed') return { width: w, height: h };
@@ -42,6 +51,14 @@ function createPet() {
   if (process.platform === 'darwin') petWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
   petWindow.setFullScreenable(false);
   petWindow.loadFile(path.join(__dirname, 'index.html'));
+  petWindow.webContents.on('context-menu', event => {
+    event.preventDefault();
+    Menu.buildFromTemplate([
+      { label: 'Hide Tito', click: () => petWindow?.hide() },
+      { type: 'separator' },
+      { label: 'Quit Tito', click: () => app.quit() }
+    ]).popup({ window: petWindow });
+  });
   petWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   petWindow.webContents.on('will-navigate', (event, url) => { if (!url.startsWith('file://')) event.preventDefault(); });
   petWindow.webContents.on('before-input-event', (event, input) => {
