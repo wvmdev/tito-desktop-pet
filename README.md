@@ -1,73 +1,45 @@
 # Tito — desktop cat companion
 
-Tito is a small, draggable desktop cat for macOS and Windows. He stays above ordinary app windows. Click him to reveal a compact glass toolbar with Chat and Settings; the chat panel appears only when opened from the pet.
+Tito is an open-source desktop cat for Windows 10/11 (x64) and macOS on Apple silicon. The transparent cat stays above ordinary windows. Click Tito to open Chat and Settings, drag him to move him, and use the Tito app menu to quit on macOS. On Windows, use Ctrl+Q or close Tito from the taskbar.
 
-## Instructions for an AI assistant
+## Download and install
 
-If a user asks you to install Tito from this repository, follow these steps:
+Ready-to-install files are attached to the [latest GitHub release](https://github.com/wvmdev/tito-desktop-pet/releases/latest):
 
-1. Check which operating system and processor the computer uses. Choose the matching macOS or Windows steps below; do not use the Windows package on a Mac or the Mac package on Windows.
-2. Open the [Build Tito desktop apps workflow](https://github.com/wvahub/tito-desktop-pet/actions/workflows/build.yml). If the repository is private and you cannot access it, explain that the owner must grant your signed-in GitHub account access. Do not try to get around the access restriction.
-3. If a recent successful workflow run has the needed artifact, download it. Otherwise, select **Run workflow** on the `main` branch and wait for both platform jobs to finish. Download only the artifact for this computer. GitHub removes workflow artifacts after a limited time.
-4. Install using the matching macOS or Windows instructions below. Explain any operating system warning about the unsigned app, and follow the platform's security and confirmation rules; do not silently bypass a warning.
-5. Finish by telling the user where Tito was installed and how to open him. Do not ask the user to send an AI assistant an API key; provider keys belong in Tito's **Settings** on the user's computer.
+- **macOS (Apple silicon):** download `Tito-1.0.0-mac-arm64.dmg`, open it, and drag **Tito** into **Applications**.
+- **Windows 10/11 (x64):** download `Tito-Setup-1.0.0-win-x64.exe` and run the installer. It creates Start Menu and desktop shortcuts. The portable ZIP is also available as `Tito-portable-1.0.0-win-x64.zip`.
+- **Source:** download `Tito-source-1.0.0.zip`, or clone this repository.
 
-If you cannot access GitHub Actions or the user does not want to run a workflow, explain the **Build from source** option instead. The source build requires Node.js and a terminal, so do not present it as a one-click installer.
-
-## Install a ready-to-use build
-
-The repository builds installers with GitHub Actions. After opening the [Actions tab](https://github.com/wvahub/tito-desktop-pet/actions):
-
-1. Choose **Build Tito desktop apps**.
-2. Click **Run workflow**, keep the `main` branch selected, then start the workflow.
-3. When both jobs finish, open that workflow run and download the artifact for your computer. Artifacts are available for a limited time, so save the download locally.
-
-### macOS
-
-1. Download and unzip **Tito-mac-arm64**. This build is for Apple silicon Macs (M1 or newer).
-2. Open `Tito.dmg`, then drag **Tito** into **Applications**.
-3. Open Tito from Applications. The first launch may be blocked because this build is not signed or notarized. In Finder, Control-click Tito, choose **Open**, then choose **Open** again. If macOS still blocks it, go to **System Settings → Privacy & Security** and choose **Open Anyway** for Tito.
-
-The macOS build in Actions targets Apple silicon. To build for an Intel Mac, build on that Mac from source using the steps below.
-
-### Windows
-
-1. Download and unzip **Tito-windows-x64**.
-2. Run `Tito Setup.exe` and follow the installer. It lets you choose an installation folder and creates the app shortcuts.
-3. If Windows SmartScreen warns that the app is unrecognized, choose **More info → Run anyway**. The installer is unsigned.
-
-The artifact also includes a portable ZIP build if you prefer not to install Tito. Extract it, then run `Tito.exe`.
+The desktop builds are unsigned because no developer signing certificates are configured. Windows SmartScreen or macOS Gatekeeper may identify an unsigned build. Review the source and release checksums before installing, or build it yourself from source. The GitHub Actions workflow also builds native Windows and macOS packages.
 
 ## Build from source
 
-Install [Node.js 24 or newer](https://nodejs.org/), download or clone this repository, then open a terminal in the project folder and run:
+Install [Node.js 24 or newer](https://nodejs.org/), then run these commands from the project folder:
 
 ```sh
 npm ci
 npm start
 ```
 
-To package the app on your own computer:
+Build a package on its target operating system:
 
 ```sh
-npm run dist:mac   # macOS, build on the target Mac architecture
 npm run dist:win   # Windows x64 installer and portable ZIP
+npm run dist:mac   # macOS DMG for the Mac architecture in use
 ```
 
-Windows packages should be built on Windows; macOS packages should be built on macOS. The ready-to-use GitHub Actions workflow builds each on a native runner.
+Each package uses Electron's native runtime. Tito stores API keys with Electron `safeStorage` (Windows DPAPI or the macOS Keychain).
 
 ## Connect an AI provider
 
-Open **Settings**, choose OpenAI, Anthropic, Google Gemini, OpenRouter, or an OpenAI-compatible endpoint, then enter the model and API key. **Test** checks that the selected key and model work before you save. Compatible endpoints include services such as Groq, Mistral, DeepSeek, and xAI. Custom endpoints must use HTTPS, except localhost for local servers.
+Open **Settings**, choose OpenAI, Anthropic, Google Gemini, OpenRouter, or an OpenAI-compatible endpoint, then enter the model and API key. **Test** checks the selected key and model before saving. Custom endpoints must use HTTPS, except localhost for local servers.
 
-Tito stores API keys encrypted with Electron `safeStorage` (macOS Keychain or Windows DPAPI), separately for each provider. Keys stay in the main process and are never returned to the renderer. Chat messages go to the provider selected in Settings. Conversation history stays in memory for the current chat and is cleared with **New chat**. Provider API usage may incur charges under that provider's terms.
+Keys stay in the app's main process and are never returned to the renderer. Chat messages go only to the provider selected in Settings. Conversation history stays in memory for the current chat and is cleared with **New chat**. Provider API usage may incur charges under that provider's terms.
 
 ## Pet behavior
 
-Tito's mood responds to local time, battery when available, and Barcelona weather. Weather-dependent moods continue with the last fetched conditions if the network is unavailable. When the cursor has not moved over Tito for 2 minutes, each mood uses its selected frame loop. After 5 minutes he freezes on the chosen resting frame. Moving the cursor over him wakes the normal three-frame animation. Joy changes frames every 15 seconds, anger every 5 seconds, and sick holds frame 3 for 2 idle minutes before switching to frame 1. The exact frame choices are in [Aura-animation-guide.svg](Aura-animation-guide.svg).
-
-The mood priority is low battery (when the system exposes that reading), special dates, nighttime, thunderstorms, heat, heavy rain or snow, drizzle, sunny weekends, Monday mornings, meal times, clear daytime, cloudy mornings, evening, then idle. Weather is currently read for Barcelona.
+Tito's mood responds to local time, battery status when available, and Barcelona weather. Weather-dependent moods continue with the last fetched conditions while offline. After two idle minutes, each mood uses its selected frame loop. After five minutes Tito holds a resting frame. Moving the cursor over him wakes the normal three-frame animation. The mood priority and frame choices are documented in [Aura-animation-guide.svg](Aura-animation-guide.svg).
 
 ## Project contents
 
-The repository includes the Electron app source, sprite assets, animation guide, test file, lockfile, and GitHub Actions build workflow. Generated installers and unpacked builds are excluded from version control.
+This repository contains the Electron source, sprite assets, animation guide, tests, lockfile, MIT license, and GitHub Actions workflow. Generated build folders are excluded from the source tree; downloadable installers and source archives are attached to GitHub Releases.

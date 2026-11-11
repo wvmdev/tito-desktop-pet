@@ -1,7 +1,8 @@
 {
   "name": "tito-desktop-pet",
   "version": "1.0.0",
-  "description": "Tito, a small animated desktop companion for macOS and Windows",
+  "description": "Tito, a cozy desktop cat companion",
+  "license": "MIT",
   "main": "main.js",
   "scripts": {
     "start": "electron .",
@@ -30,11 +31,13 @@
     ],
     "mac": {
       "category": "public.app-category.lifestyle",
+      "icon": "assets/tito-icon.icns",
       "target": [
         "dmg"
       ]
     },
     "win": {
+      "icon": "assets/tito-icon.ico",
       "target": [
         "nsis",
         "zip"

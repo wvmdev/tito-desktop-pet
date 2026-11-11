@@ -1,4 +1,5 @@
 const { app, BrowserWindow, Menu, ipcMain, screen, safeStorage } = require('electron');
+app.setName('Tito');
 const path = require('node:path');
 const fs = require('node:fs/promises');
 let petWindow, dragOrigin, savedPosition = null, scale = 1, panelMode = 'closed';
@@ -204,7 +205,7 @@ ipcMain.handle('aura:chat:send', async (event, payload = {}) => {
 });
 
 app.whenReady().then(async () => {
-  app.setName('Tito'); Menu.setApplicationMenu(null);
+  Menu.setApplicationMenu(null);
   try { savedPosition = JSON.parse(await fs.readFile(positionPath(), 'utf8')); } catch {}
   createPet();
   app.on('activate', () => { if (!petWindow) createPet(); else petWindow.show(); });
