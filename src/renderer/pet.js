@@ -85,6 +85,8 @@ let clickTimer = null;
 window.addEventListener('contextmenu', e => e.preventDefault());
 
 window.addEventListener('pointerdown', e => {
+  // A new press while still "carrying" him means the earlier mouse-up was missed: put him down.
+  if (press && press.dragging) { release(); return; }
   if (!hitTest(e.clientX, e.clientY)) return;
   e.preventDefault();
   document.documentElement.setPointerCapture(e.pointerId);
@@ -100,9 +102,11 @@ window.addEventListener('pointermove', e => {
   }
   if (press.dragging) {
     api.dragMove(e.screenX, e.screenY);
-    // Safety net: if the mouse-up never reaches us, drop him after 2s without movement.
+    // Safety net for a missed mouse-up: let go after a long pause with no movement at all.
+    // (Button state on move events isn't trustworthy here: the engine also sends synthetic
+    // moves with no buttons whenever the sprite changes.)
     clearTimeout(dragWatchdog);
-    dragWatchdog = setTimeout(() => release(), 2000);
+    dragWatchdog = setTimeout(() => release(), 8000);
   }
 });
 

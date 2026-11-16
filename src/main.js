@@ -13,6 +13,7 @@ const { Mood } = require('./mood');
 const { SecretStore } = require('./ai/secrets');
 const { createProvider, normalizeError, PROVIDERS, providerList } = require('./ai/providers');
 const { LEVELS, PERM_TOGGLES } = require('./ai/permissions');
+const { ChatSession } = require('./chat');
 
 const ROOT = path.join(__dirname, '..');
 // Base window box at size 1. Sprites are normalised so Tito looks the same size in every
@@ -32,6 +33,17 @@ if (process.env.TITO_SMOKE || process.env.TITO_RECORD || process.env.TITO_SHOT) 
   app.setPath('userData', path.join(require('os').tmpdir(), `tito-dev-${process.pid}`));
 }
 
+// One Tito at a time: launching again just brings the existing one's Settings forward.
+const DEV_RUN = !!(process.env.TITO_SMOKE || process.env.TITO_RECORD || process.env.TITO_SHOT);
+if (!DEV_RUN && !app.requestSingleInstanceLock()) app.exit(0);
+app.on('second-instance', () => { if (settings) openSettings(); });
+
+// Our windows only ever show our own pages: no navigation, no new windows.
+app.on('web-contents-created', (_e, wc) => {
+  wc.on('will-navigate', (e, url) => { if (!url.startsWith('tito://app/')) e.preventDefault(); });
+  wc.setWindowOpenHandler(() => ({ action: 'deny' }));
+});
+
 let petWin = null;
 let popupWin = null;   // the one small glass popup currently open: 'menu' or 'size'
 let popupKind = null;
@@ -42,6 +54,8 @@ let settings = null;
 let windowFeed = null;
 let mood = null;
 let secrets = null;
+let chat = null;
+let chatWin = null;
 
 const pageURL = name => `tito://app/src/renderer/${name}`;
 const petDims = size => ({ W: Math.round(BASE_W * size), H: Math.round(BASE_H * size) });
@@ -129,8 +143,6 @@ function placePet(x, y) {
 function applySize(size) {
   if (!petWin || !brain) return;
   const { W, H } = petDims(size);
-  const nx = Math.round(brain.x + (brain.W - W) / 2);
-  const ny = Math.round(brain.y + brain.H - H);
   petWin.setSize(W, H);
   brain.setDims(W, H, size); // re-places the window (with lift) keeping his feet planted
   petWin.webContents.send('pet:size', size);
@@ -305,6 +317,17 @@ function registerIpc() {
   const fromMenu = fromPopup('menu');
   ipcMain.on('menu:close', e => { if (fromMenu(e)) closePopup(); });
   ipcMain.on('menu:settings', e => { if (fromMenu(e)) { closePopup(); openSettings(); } });
+  ipcMain.on('menu:chat', e => { if (fromMenu(e)) { closePopup(); openChat(); } });
+
+  const fromChat = e => chatWin && e.sender === chatWin.webContents;
+  ipcMain.handle('chat:get', e => {
+    if (!fromChat(e)) throw new Error('denied');
+    return { history: chat.history(), status: chatStatus() };
+  });
+  ipcMain.on('chat:send', (e, text) => { if (fromChat(e) && typeof text === 'string') chat.send(text); });
+  ipcMain.on('chat:stop', e => { if (fromChat(e)) chat.stop(); });
+  ipcMain.handle('chat:clear', e => { if (!fromChat(e)) throw new Error('denied'); chat.clear(); });
+  ipcMain.on('chat:open-settings', e => { if (fromChat(e)) openSettings(); });
 
   const fromSize = fromPopup('size');
   ipcMain.handle('size:get', e => {
@@ -346,12 +369,17 @@ function registerIpc() {
   // ---- AI provider: keys and connection test (keys never travel back to the renderer) ----
   ipcMain.handle('ai:save-key', (e, provider, key) => {
     if (!fromSettings(e)) throw new Error('denied');
-    try { secrets.set(provider, key); return { ok: true, ai: aiStatus() }; }
+    try {
+      secrets.set(provider, key);
+      if (chatWin && !chatWin.isDestroyed()) chatWin.webContents.send('chat:status', chatStatus());
+      return { ok: true, ai: aiStatus() };
+    }
     catch (err) { return { ok: false, error: err.message, ai: aiStatus() }; }
   });
   ipcMain.handle('ai:remove-key', (e, provider) => {
     if (!fromSettings(e)) throw new Error('denied');
     secrets.remove(provider);
+    if (chatWin && !chatWin.isDestroyed()) chatWin.webContents.send('chat:status', chatStatus());
     return { ok: true, ai: aiStatus() };
   });
   ipcMain.handle('ai:list-models', async e => {
@@ -402,6 +430,55 @@ async function testConnection(overrides) {
   }
 }
 
+// ---------- chat ----------
+function chatStatus() {
+  const id = settings.get('aiProvider');
+  const p = PROVIDERS[id];
+  const needsKey = !p.local && !secrets.get(id);
+  const model = settings.get('aiModels')[id];
+  if (needsKey) return `${p.label}: add an API key in Settings`;
+  return model ? `${p.label} · ${model}` : `${p.label}: choose a model in Settings`;
+}
+
+function startChat() {
+  chat = new ChatSession({
+    getProvider: () => currentProvider(),
+    getSecretsForRedaction: () => [secrets.get(settings.get('aiProvider'))],
+    normalizeError,
+    getMood: () => mood && mood.summary(),
+  });
+  const toWin = (ch, data) => { if (chatWin && !chatWin.isDestroyed()) chatWin.webContents.send(ch, data); };
+  chat.on('start', () => brain && brain.setChatting(true));
+  chat.on('delta', d => toWin('chat:delta', d));
+  chat.on('done', d => toWin('chat:done', d));
+  chat.on('error', e => toWin('chat:error', e));
+  chat.on('idle', () => { toWin('chat:idle'); if (brain) brain.setChatting(false); });
+}
+
+function openChat() {
+  if (chatWin) { chatWin.show(); chatWin.focus(); return; }
+  const W = 400, H = 560;
+  const a = screen.getDisplayNearestPoint({ x: Math.round(brain.footX()), y: Math.round(brain.footY()) }).workArea;
+  // Beside Tito, on whichever side has room.
+  let x = Math.round(brain.footX() + 90 * settings.get('size'));
+  if (x + W > a.x + a.width) x = Math.round(brain.footX() - 90 * settings.get('size') - W);
+  x = Math.min(a.x + a.width - W, Math.max(a.x, x));
+  const y = Math.max(a.y, Math.round(a.y + a.height - H - 20));
+  chatWin = new BrowserWindow({
+    width: W, height: H, x, y, minWidth: 320, minHeight: 360,
+    title: 'Chat with Tito', show: false, alwaysOnTop: true,
+    ...(isMac ? {
+      vibrancy: 'under-window', visualEffectState: 'active',
+      titleBarStyle: 'hiddenInset', transparent: true, backgroundColor: '#00000000',
+    } : {}),
+    webPreferences: secureWebPrefs(),
+  });
+  chatWin.setAlwaysOnTop(true, 'floating'); // above apps, below Tito
+  chatWin.loadURL(pageURL('chat.html'));
+  chatWin.once('ready-to-show', () => { app.focus({ steal: true }); chatWin.show(); chatWin.focus(); });
+  chatWin.on('closed', () => { chatWin = null; });
+}
+
 // ---------- settings window (native macOS blur behind translucent "glass" cards) ----------
 function openSettings() {
   if (settingsWin) { settingsWin.show(); settingsWin.focus(); return; }
@@ -433,6 +510,7 @@ function refreshTrayMenu() {
   if (!tray) return;
   const pose = STAY_POSES.find(p => p.id === settings.get('stayPose'));
   tray.setContextMenu(Menu.buildFromTemplate([
+    { label: 'Chat…', click: openChat },
     { label: 'Settings…', click: openSettings },
     { label: 'Size…', click: () => openPopup('size') },
     { label: `Stay still (${pose ? pose.label.toLowerCase() : 'sitting'})`, type: 'checkbox',
@@ -449,6 +527,7 @@ app.whenReady().then(() => {
   secrets = new SecretStore();
   settings.on('change', (key, value) => {
     if (key === 'personality' && brain) brain.setPersonality(value);
+    if (['aiProvider', 'aiModels'].includes(key) && chatWin && !chatWin.isDestroyed()) chatWin.webContents.send('chat:status', chatStatus());
     if (settingsWin && !settingsWin.isDestroyed() && key !== 'size') settingsWin.webContents.send('settings:changed', settings.all());
     if (key === 'size') applySize(value);
     if ((key === 'weatherEnabled' || key === 'locationOverride') && mood) mood.invalidateLocation();
@@ -462,6 +541,7 @@ app.whenReady().then(() => {
   createPetWindow();
   createTray();
   startMood();
+  startChat();
   startActivityWatch();
   ensurePopup('menu');
   ensurePopup('size');
@@ -469,7 +549,7 @@ app.whenReady().then(() => {
   if (process.env.TITO_SMOKE) {
     require('./smoke').run({
       app, petWin, brain, settings, openSettings, openPopup, checkActivity, getMood: () => mood,
-      getSecrets: () => secrets, testConnection,
+      getSecrets: () => secrets, testConnection, openChat, getChatWin: () => chatWin, getChat: () => chat,
       getPopup: () => ({ win: popupWin, kind: popupKind }), getSettingsWin: () => settingsWin,
     }).catch(e => { console.log('SMOKE ERROR', e && e.stack); app.exit(3); });
   }
@@ -490,5 +570,5 @@ app.whenReady().then(() => {
   }
 });
 
-app.on('will-quit', () => { if (windowFeed) windowFeed.kill(); });
+app.on('will-quit', () => { if (windowFeed) windowFeed.kill(); if (settings) settings.flush(); });
 app.on('window-all-closed', () => app.quit());

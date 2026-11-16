@@ -507,6 +507,26 @@ class Brain extends EventEmitter {
 
   setMood(state) { this.mood = state; }
 
+  // While a chat reply is being written Tito sits and watches; a little wave when it arrives.
+  setChatting(on) {
+    if (on) {
+      if (!this._autonomous() || this.stayPose) return;
+      this._clear();
+      this.y = this.standY();
+      this._commit();
+      this._setMode('idle', { name: 'curioso', chat: true });
+      this._anim('curioso');
+      this._chatPose = true;
+    } else if (this._chatPose) {
+      this._chatPose = false;
+      if (this.mode !== 'idle') return; // he was picked up, fell asleep, etc.
+      this._clear();
+      const speed = 2;
+      this._anim('saludando', speed);
+      this._after(LOOP_MS / speed, () => this.next());
+    }
+  }
+
   // ---------- sleep (no user activity) ----------
   sleep() {
     if (!['idle', 'walk', 'run', 'hop', 'stalk', 'land'].includes(this.mode)) return false;

@@ -22,6 +22,19 @@ contextBridge.exposeInMainWorld('tito', {
   menu: {
     close: () => ipcRenderer.send('menu:close'),
     openSettings: () => ipcRenderer.send('menu:settings'),
+    openChat: () => ipcRenderer.send('menu:chat'),
+  },
+  chat: {
+    get: () => ipcRenderer.invoke('chat:get'),
+    send: text => ipcRenderer.send('chat:send', text),
+    stop: () => ipcRenderer.send('chat:stop'),
+    clear: () => ipcRenderer.invoke('chat:clear'),
+    openSettings: () => ipcRenderer.send('chat:open-settings'),
+    onDelta: cb => ipcRenderer.on('chat:delta', (_e, d) => cb(d)),
+    onDone: cb => ipcRenderer.on('chat:done', (_e, d) => cb(d)),
+    onError: cb => ipcRenderer.on('chat:error', (_e, d) => cb(d)),
+    onIdle: cb => ipcRenderer.on('chat:idle', () => cb()),
+    onStatus: cb => ipcRenderer.on('chat:status', (_e, s) => cb(s)),
   },
   size: {
     get: () => ipcRenderer.invoke('size:get'),

@@ -39,10 +39,21 @@ function startMockAI() {
         res.end(JSON.stringify({ object: 'list', data: [{ id: 'models/gemini-test-pro', object: 'model' }, { id: 'local-llm', object: 'model' }] }));
       } else if (req.url.startsWith('/v1/chat/completions')) {
         res.writeHead(200, { 'content-type': 'text/event-stream' });
-        for (const t of ['Hello ', 'from ', 'custom.']) sse(null, { id: 'c1', object: 'chat.completion.chunk', model: 'local-llm', choices: [{ index: 0, delta: { content: t }, finish_reason: null }] });
-        sse(null, { id: 'c1', object: 'chat.completion.chunk', model: 'local-llm', choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] });
-        res.write('data: [DONE]\n\n');
-        res.end();
+        const msgs = (seen.at(-1).body || {}).messages || [];
+        const last = String((msgs[msgs.length - 1] || {}).content || '');
+        const chunk = t => sse(null, { id: 'c1', object: 'chat.completion.chunk', model: 'local-llm', choices: [{ index: 0, delta: { content: t }, finish_reason: null }] });
+        const finish = () => { sse(null, { id: 'c1', object: 'chat.completion.chunk', model: 'local-llm', choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] }); res.write('data: [DONE]\n\n'); res.end(); };
+        if (last.includes('slow')) { // streams for ~6s so the test can press Stop
+          let i = 0;
+          const iv = setInterval(() => { if (res.writableEnded || res.destroyed) { clearInterval(iv); return; } chunk(`word${i} `); if (++i >= 30) { clearInterval(iv); finish(); } }, 200);
+          res.on('close', () => clearInterval(iv));
+          return;
+        }
+        const parts = last.includes('format')
+          ? ['Here is **bold** and `x = 1` <img src=x onerror="window.pwned=1">', '\n```js\nconsole.log(1)\n```']
+          : ['Hello ', 'from ', 'custom.'];
+        for (const t of parts) chunk(t);
+        finish();
       } else { res.writeHead(404); res.end(); }
     });
   });
@@ -51,7 +62,7 @@ function startMockAI() {
 
 const wait = ms => new Promise(r => setTimeout(r, ms));
 
-async function run({ app, petWin, brain, settings, openSettings, getPopup, getSettingsWin, checkActivity, getMood, getSecrets, testConnection }) {
+async function run({ app, petWin, brain, settings, openSettings, getPopup, getSettingsWin, checkActivity, getMood, getSecrets, testConnection, openChat, getChatWin, getChat }) {
   const out = process.env.TITO_SMOKE;
   const wc = petWin.webContents;
   const results = [];
@@ -127,7 +138,7 @@ async function run({ app, petWin, brain, settings, openSettings, getPopup, getSe
 
   await settle();
   pt = await findPt();
-  click(); await wait(80); click();
+  click(); click();
   await wait(800);
   const p = getPopup();
   check('double click -> size popup', p.win && p.kind === 'size', `kind=${p.kind}`);
@@ -475,6 +486,72 @@ async function run({ app, petWin, brain, settings, openSettings, getPopup, getSe
   fs.writeFileSync(settings.file, savedJSON);
   settings.set('aiProvider', 'anthropic');
   mock.server.close();
+
+  // ---- phase 6: chat ----
+  const cmock = await startMockAI();
+  sec.set('custom', 'local-key-1234567890');
+  settings.set('aiProvider', 'custom');
+  settings.set('customBaseURL', `http://127.0.0.1:${cmock.port}/v1`);
+  settings.set('aiModels', { ...settings.get('aiModels'), custom: 'local-llm' });
+  getChat().clear();
+  openChat();
+  await wait(1500);
+  const cw = getChatWin();
+  const cjs = code => cw.webContents.executeJavaScript(code);
+  const typeAndSend = t => cjs(`(() => { const i = document.getElementById('input'); i.value = ${JSON.stringify(t)}; i.dispatchEvent(new Event('input')); i.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })); })()`);
+  check('chat window opens with the provider in the header', /Custom .*local-llm/.test(await cjs('document.getElementById("sub").textContent')));
+  await typeAndSend('Hi Tito');
+  await wait(800);
+  const bubbles = await cjs('[...document.querySelectorAll(".msg")].map(m => m.className.split(" ")[1] + ":" + m.firstChild.textContent)');
+  check('chat: user message and streamed reply shown', JSON.stringify(bubbles) === JSON.stringify(['user:Hi Tito', 'assistant:Hello from custom.']), JSON.stringify(bubbles));
+  const firstReq = cmock.seen.at(-1).body.messages;
+  check('chat: Tito system prompt sent', firstReq[0].role === 'system' && /You are Tito/.test(firstReq[0].content));
+  await typeAndSend('And again');
+  await wait(800);
+  const second = cmock.seen.at(-1).body.messages.filter(m => m.role !== 'system').map(m => m.role + ':' + m.content);
+  check('chat: follow-ups include the conversation so far', JSON.stringify(second) === JSON.stringify(['user:Hi Tito', 'assistant:Hello from custom.', 'user:And again']), JSON.stringify(second));
+  await typeAndSend('please format');
+  await wait(800);
+  const fmt = await cjs('(() => { const m = [...document.querySelectorAll(".msg.assistant")].pop(); return { img: !!m.querySelector("img"), strong: m.querySelector("strong")?.textContent, code: m.querySelector("code")?.textContent, pre: m.querySelector("pre code")?.textContent, pwned: !!window.pwned, text: m.textContent }; })()');
+  check('chat: replies are rendered as text (HTML in a reply is not executed)', !fmt.img && !fmt.pwned && fmt.text.includes('<img src=x'), JSON.stringify(fmt));
+  check('chat: **bold**, `code` and ``` blocks formatted', fmt.strong === 'bold' && fmt.code === 'x = 1' && fmt.pre === 'console.log(1)', JSON.stringify(fmt));
+  brain.mode = 'idle'; brain.stayPose = null;
+  await typeAndSend('go slow please');
+  await wait(1200);
+  check('Tito watches curiously while a reply is being written', brain.anim === 'curioso', `anim=${brain.anim}`);
+  await cjs(`window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))`);
+  await wait(600);
+  const stopped = await cjs('(() => { const m = [...document.querySelectorAll(".msg.assistant")].pop(); return { text: m.firstChild.textContent, meta: m.querySelector(".meta")?.textContent, sendLabel: document.getElementById("send").getAttribute("aria-label") }; })()');
+  check('Esc stops a reply mid-stream and keeps what arrived', /^word0 /.test(stopped.text) && stopped.text.endsWith('…') && stopped.meta === 'Stopped' && stopped.sendLabel === 'Send', JSON.stringify(stopped));
+  check('Tito waves when the reply ends', brain.anim === 'saludando', `anim=${brain.anim}`);
+  const saved = JSON.parse(fs.readFileSync(getChat().file, 'utf8'));
+  check('conversation is saved for next time', saved.length === 8 && saved[0].content === 'Hi Tito' && saved[7].stopped === true, `len=${saved.length}`);
+  // "New chat" while a reply is streaming must leave a truly empty conversation.
+  await typeAndSend('go slow again');
+  await wait(700);
+  await cjs('document.getElementById("newChat").click()');
+  await wait(900);
+  check('New chat mid-answer leaves nothing behind', getChat().history().length === 0 && !getChat().busy && (await cjs('document.querySelectorAll(".msg").length')) === 0,
+    `history=${getChat().history().length}`);
+  await typeAndSend('Hi Tito');
+  await wait(800);
+  // No key -> friendly error with a way to fix it
+  settings.set('aiProvider', 'groq');
+  sec.remove('groq');
+  await typeAndSend('hello?');
+  await wait(600);
+  const chatErr = await cjs('(() => { const e = [...document.querySelectorAll(".err")].pop(); return e ? { text: e.querySelector("span").textContent, buttons: [...e.querySelectorAll("button")].map(b => b.textContent) } : null; })()');
+  check('chat: missing key shows a clear error with "Open Settings"', chatErr && /No API key/.test(chatErr.text) && chatErr.buttons.includes('Open Settings'), JSON.stringify(chatErr));
+  await cw.webContents.executeJavaScript('document.querySelector(".msg.user:last-of-type")');
+  await wait(200);
+  await shot(cw, 'chat.png');
+  // New chat clears history
+  await cjs('document.getElementById("newChat").click()');
+  await wait(300);
+  check('New chat clears the conversation', getChat().history().length === 0 && (await cjs('document.querySelectorAll(".msg").length')) === 0);
+  settings.set('aiProvider', 'anthropic');
+  cmock.server.close();
+  cw.close();
 
   // ---- settings ----
   settings.set('personality', 'sleepy');

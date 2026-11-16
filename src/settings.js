@@ -92,9 +92,12 @@ class Settings extends EventEmitter {
     this.data[key] = v;
     // Debounced write: the size slider fires many changes per second.
     clearTimeout(this._saveTimer);
-    this._saveTimer = setTimeout(() => this._write(), 300);
+    this._saveTimer = setTimeout(() => { this._saveTimer = null; this._write(); }, 300);
     this.emit('change', key, v);
   }
+
+  // Write any pending change now (called on quit so a last-second change isn't lost).
+  flush() { if (this._saveTimer) { clearTimeout(this._saveTimer); this._saveTimer = null; this._write(); } }
 
   _write() {
     fs.mkdirSync(path.dirname(this.file), { recursive: true });
