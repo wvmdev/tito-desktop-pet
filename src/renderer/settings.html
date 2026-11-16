@@ -81,6 +81,50 @@
     input[type=text] { width: 150px; }
     .warn { color: #c4572e; font-size: 12px; margin: 4px 4px 0; min-height: 0; }
     @media (prefers-color-scheme: dark) { .warn { color: #f09a76; } }
+    .seg { display: inline-flex; padding: 3px; border-radius: 12px; background: var(--glass-hover); gap: 2px; }
+    .seg label { position: relative; padding: 6px 14px; border-radius: 9px; cursor: pointer; font-weight: 600; font-size: 12.5px; }
+    .seg input { position: absolute; opacity: 0; pointer-events: none; }
+    .seg label:has(input:checked) { background: var(--accent); color: #fff; }
+    .seg label:has(input:focus-visible) { outline: 2px solid var(--accent); outline-offset: 2px; }
+    .panel { padding: 14px 16px; border-radius: 16px; display: flex; flex-direction: column; gap: 11px; }
+    .panel > * { position: relative; z-index: 1; }
+    .line { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+    .line > .lbl { width: 72px; font-weight: 600; flex: none; }
+    .line input[type=text], .line input[type=password], .line input[type=url] { flex: 1; min-width: 140px; width: auto; }
+    input[type=password], input[type=url] {
+      font: inherit; color: var(--ink); background: var(--glass-hover); border: 1px solid var(--glass-divider);
+      border-radius: 9px; padding: 5px 9px; outline: none;
+    }
+    input[type=password]:focus-visible, input[type=url]:focus-visible { border-color: var(--accent); }
+    button.btn { font: inherit; font-weight: 600; border: 1px solid var(--glass-divider); background: var(--glass-hover);
+      color: var(--ink); border-radius: 9px; padding: 5px 12px; cursor: pointer; }
+    button.btn:hover { background: var(--glass-press); }
+    button.btn.primary { background: var(--accent); color: #fff; border-color: transparent; }
+    button.btn:disabled { opacity: .5; cursor: default; }
+    button.btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+    .keystate { color: var(--ink-muted); font-size: 12px; }
+    .keystate.ok { color: var(--accent); }
+    .result { font-size: 12px; min-height: 16px; }
+    .result.ok { color: var(--accent); }
+    .result.bad { color: #c4572e; }
+    @media (prefers-color-scheme: dark) { .result.bad { color: #f09a76; } }
+    .note { color: var(--ink-muted); font-size: 12px; }
+    .levels { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    label.level { display: flex; flex-direction: column; gap: 3px; padding: 11px 13px; border-radius: 16px; cursor: pointer; }
+    label.level > * { position: relative; z-index: 1; }
+    label.level input { position: absolute; opacity: 0; pointer-events: none; }
+    label.level .name { font-size: 14px; }
+    label.level:has(input:checked) { outline: 2px solid var(--accent); outline-offset: -2px; }
+    label.level:has(input:focus-visible) { outline: 3px solid var(--accent); }
+    label.level.danger:has(input:checked) { outline-color: #d0533a; }
+    label.level .tag { font-size: 10.5px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; color: var(--accent); }
+    label.level.danger .tag { color: #d0533a; }
+    .toggles { display: flex; flex-direction: column; gap: 2px; padding: 6px 16px; border-radius: 16px; margin-top: 10px; }
+    .toggles > * { position: relative; z-index: 1; }
+    .toggle-row { display: flex; align-items: center; gap: 12px; padding: 7px 0; }
+    .toggle-row + .toggle-row { border-top: 1px solid var(--glass-divider); }
+    .toggle-row .t { flex: 1; font-weight: 600; }
+    .toggles.off { opacity: .55; }
     .soon { color: var(--ink-muted); font-size: 12px; padding: 12px 16px; border-radius: 16px; }
     .soon > * { position: relative; z-index: 1; }
   </style>
@@ -162,7 +206,46 @@
     <p class="hint">Tip: double-click Tito to change his size from anywhere.</p>
 
     <h2>AI assistant</h2>
-    <div class="soon glass"><span>AI provider, API key and security level come next.</span></div>
+    <div class="panel glass">
+      <div class="line">
+        <span class="lbl" id="provLbl">Provider</span>
+        <div class="seg" role="radiogroup" aria-labelledby="provLbl" id="providers">
+          <label><input type="radio" name="provider" value="anthropic">Claude</label>
+          <label><input type="radio" name="provider" value="openai">OpenAI</label>
+          <label><input type="radio" name="provider" value="custom">Custom</label>
+        </div>
+      </div>
+      <div class="line">
+        <label class="lbl" for="model">Model</label>
+        <input type="text" id="model" list="modelList" autocomplete="off" spellcheck="false">
+        <datalist id="modelList"></datalist>
+      </div>
+      <div class="line" id="baseRow" hidden>
+        <label class="lbl" for="baseURL">Base URL</label>
+        <input type="url" id="baseURL" placeholder="https://… or http://localhost:11434/v1" autocomplete="off" spellcheck="false">
+      </div>
+      <div class="line">
+        <label class="lbl" for="apiKey">API key</label>
+        <input type="password" id="apiKey" autocomplete="off" spellcheck="false" placeholder="Paste your key">
+        <button class="btn primary" id="saveKey">Save</button>
+      </div>
+      <div class="line">
+        <span class="lbl"></span>
+        <span class="keystate" id="keyState"></span>
+        <button class="btn" id="removeKey" hidden>Remove</button>
+      </div>
+      <div class="line">
+        <span class="lbl"></span>
+        <button class="btn" id="testBtn">Test connection</button>
+        <span class="result" id="testResult" aria-live="polite"></span>
+      </div>
+      <div class="note">Keys are encrypted with your Mac's Keychain and are only ever sent to the provider you pick. Tito never shows them again or writes them to logs.</div>
+    </div>
+
+    <h2>Computer control</h2>
+    <div class="levels" id="levels" role="radiogroup" aria-label="Security level"></div>
+    <div class="toggles glass" id="toggles"></div>
+    <p class="hint">Press Esc at any time to stop what Tito is doing. Only your own clicks count as approval: text Tito sees on screen, in files or on web pages is never treated as a "yes" or as an instruction.</p>
   </main>
   <script src="settings.js"></script>
 </body>

@@ -6,10 +6,49 @@ const { screen } = require('electron');
 const { PERSONALITIES } = require('./personalities');
 const { MOVE_ANIMS } = require('./brain');
 const { computeMood } = require('./mood-rules');
+const http = require('http');
+const { createProvider, normalizeError, redact } = require('./ai/providers');
+const { decide, DEFAULT_PERMS } = require('./ai/permissions');
+
+// Minimal mock of the Anthropic Messages stream + an OpenAI-compatible chat stream.
+function startMockAI() {
+  const seen = [];
+  const server = http.createServer((req, res) => {
+    let body = '';
+    req.on('data', c => { body += c; });
+    req.on('end', () => {
+      seen.push({ url: req.url, headers: req.headers, body: body ? JSON.parse(body) : null });
+      const sse = (event, data) => res.write(`${event ? `event: ${event}\n` : ''}data: ${JSON.stringify(data)}\n\n`);
+      if (req.url.startsWith('/v1/messages')) {
+        const sentKey = req.headers['x-api-key'] || String(req.headers.authorization || '').replace(/^Bearer /, '');
+        if (sentKey !== 'sk-ant-test-GOODKEY-123456') {
+          res.writeHead(401, { 'content-type': 'application/json' });
+          res.end(JSON.stringify({ type: 'error', error: { type: 'authentication_error', message: `invalid x-api-key ${sentKey}` } }));
+          return;
+        }
+        res.writeHead(200, { 'content-type': 'text/event-stream' });
+        sse('message_start', { type: 'message_start', message: { id: 'msg_1', type: 'message', role: 'assistant', model: 'claude-opus-5-5', content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 5, output_tokens: 0 } } });
+        sse('content_block_start', { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } });
+        for (const t of ['Tito ', 'is ', 'connected.']) sse('content_block_delta', { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: t } });
+        sse('content_block_stop', { type: 'content_block_stop', index: 0 });
+        sse('message_delta', { type: 'message_delta', delta: { stop_reason: 'end_turn', stop_sequence: null }, usage: { output_tokens: 4 } });
+        sse('message_stop', { type: 'message_stop' });
+        res.end();
+      } else if (req.url.startsWith('/v1/chat/completions')) {
+        res.writeHead(200, { 'content-type': 'text/event-stream' });
+        for (const t of ['Hello ', 'from ', 'custom.']) sse(null, { id: 'c1', object: 'chat.completion.chunk', model: 'local-llm', choices: [{ index: 0, delta: { content: t }, finish_reason: null }] });
+        sse(null, { id: 'c1', object: 'chat.completion.chunk', model: 'local-llm', choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] });
+        res.write('data: [DONE]\n\n');
+        res.end();
+      } else { res.writeHead(404); res.end(); }
+    });
+  });
+  return new Promise(r => server.listen(0, '127.0.0.1', () => r({ server, port: server.address().port, seen })));
+}
 
 const wait = ms => new Promise(r => setTimeout(r, ms));
 
-async function run({ app, petWin, brain, settings, openSettings, getPopup, getSettingsWin, checkActivity, getMood }) {
+async function run({ app, petWin, brain, settings, openSettings, getPopup, getSettingsWin, checkActivity, getMood, getSecrets, testConnection }) {
   const out = process.env.TITO_SMOKE;
   const wc = petWin.webContents;
   const results = [];
@@ -340,6 +379,77 @@ async function run({ app, petWin, brain, settings, openSettings, getPopup, getSe
   check('battery 8% makes him grumpy', brain.mood.mood === 'grumpy' && weightOf('enfadado') > 0);
   getMood().recompute(); // back to the real mood
 
+  // ---- phase 5: permission policy ----
+  const d = (action, level, extra = {}) => decide(action, { level, perms: DEFAULT_PERMS, ...extra }).decision;
+  const matrix = [
+    ['screenshot', 'lockdown', 'deny'], ['click', 'lockdown', 'deny'],
+    ['screenshot', 'guarded', 'allow'], ['fileRead', 'guarded', 'allow'], ['click', 'guarded', 'ask'],
+    ['type', 'guarded', 'ask'], ['openApp', 'guarded', 'ask'], ['fileWrite', 'guarded', 'ask'],
+    ['openApp', 'trusted', 'allow'], ['fileRead', 'trusted', 'allow'], ['click', 'trusted', 'allow'],
+    ['fileDelete', 'trusted', 'ask'], ['closeApp', 'trusted', 'ask'], ['purchase', 'trusted', 'ask'],
+    ['fileDelete', 'full', 'allow'], ['sendMessage', 'full', 'deny'], // sendMessages toggle is off by default
+  ];
+  const wrong = matrix.filter(([a, l, want]) => d(a, l) !== want).map(([a, l, want]) => `${a}@${l}: ${d(a, l)} != ${want}`);
+  check('permission matrix (levels x actions)', wrong.length === 0, wrong.join('; '));
+  check('click on a destructive target asks even when Trusted', d('click', 'trusted', { destructive: true }) === 'ask');
+  check('a switched-off toggle denies even at Full Access', decide('click', { level: 'full', perms: { ...DEFAULT_PERMS, mouseKeyboard: false } }).decision === 'deny');
+  check('unknown actions are denied', d('formatDisk', 'full') === 'deny');
+
+  // ---- phase 5: API keys at rest ----
+  const sec = getSecrets();
+  const KEY = 'sk-ant-test-GOODKEY-123456';
+  sec.set('anthropic', KEY);
+  const onDisk = fs.readFileSync(sec.file, 'utf8');
+  check('key is encrypted on disk (no plain text)', !onDisk.includes(KEY) && !onDisk.includes('GOODKEY'));
+  check('key decrypts for main only; renderer status shows just a hint', sec.get('anthropic') === KEY && JSON.stringify(sec.status()) === JSON.stringify({ anthropic: { saved: true, hint: '3456' }, openai: { saved: false }, custom: { saved: false } }));
+  let rejected = false;
+  try { sec.set('openai', 'short'); } catch { rejected = true; }
+  check('obviously invalid keys are refused', rejected);
+
+  // ---- phase 5: providers against local mock servers ----
+  const mock = await startMockAI();
+  const mockBase = `http://127.0.0.1:${mock.port}`;
+  let streamed = '';
+  const claude = createProvider({ provider: 'anthropic', apiKey: KEY, model: 'claude-opus-5-5', baseURL: mockBase, maxRetries: 0 });
+  const r1 = await claude.sendMessage([{ role: 'user', content: 'hi' }], { onText: t => { streamed += t; } });
+  const req1 = mock.seen.at(-1);
+  check('Claude: streams text through sendMessage', r1.text === 'Tito is connected.' && streamed === r1.text && r1.stopReason === 'end_turn', JSON.stringify(r1));
+  check('Claude: model, effort, refusal fallbacks and key header sent',
+    req1.body.model === 'claude-opus-5-5' && req1.body.output_config.effort === 'medium' && req1.body.fallbacks === 'default'
+    && String(req1.headers['anthropic-beta']).includes('server-side-fallback-2026-07-01')
+    && (req1.headers['x-api-key'] === KEY || req1.headers.authorization === `Bearer ${KEY}`),
+    JSON.stringify({ beta: req1.headers['anthropic-beta'], fb: req1.body.fallbacks }));
+  const haiku = createProvider({ provider: 'anthropic', apiKey: KEY, model: 'claude-haiku-5-5', baseURL: mockBase, maxRetries: 0 });
+  await haiku.sendMessage([{ role: 'user', content: 'hi' }]);
+  check('Claude Haiku: no fallbacks requested', mock.seen.at(-1).body.fallbacks === undefined);
+  const BAD = 'sk-ant-WRONG-key-987654321';
+  let err = null;
+  try { await createProvider({ provider: 'anthropic', apiKey: BAD, model: 'claude-opus-5-5', baseURL: mockBase, maxRetries: 0 }).sendMessage([{ role: 'user', content: 'hi' }]); }
+  catch (e) { err = normalizeError(e, [BAD]); }
+  check('bad key -> friendly "auth" error without the key in it', err && err.code === 'auth' && !JSON.stringify(err).includes('WRONG'), JSON.stringify(err));
+  check('redact() scrubs keys and bearer tokens', !/sk-ant|abcdef123456/.test(redact('x-api-key: sk-ant-abc123456789 Authorization: Bearer abcdef123456', [])));
+  streamed = '';
+  const custom = createProvider({ provider: 'custom', apiKey: 'local-key-1234567890', model: 'local-llm', baseURL: `${mockBase}/v1`, maxRetries: 0 });
+  const r2 = await custom.sendMessage([{ role: 'user', content: 'hi' }], { system: 'be brief', onText: t => { streamed += t; } });
+  const req2 = mock.seen.at(-1);
+  check('Custom (OpenAI-compatible): streams text', r2.text === 'Hello from custom.' && streamed === r2.text && r2.stopReason === 'stop', JSON.stringify(r2));
+  check('Custom: system prompt + bearer key sent', req2.body.messages[0].role === 'system' && req2.headers.authorization === 'Bearer local-key-1234567890');
+  // End-to-end through Settings: custom provider at a localhost base URL.
+  settings.set('aiProvider', 'custom');
+  settings.set('customBaseURL', `${mockBase}/v1`);
+  settings.set('customModel', 'local-llm');
+  sec.set('custom', 'local-key-1234567890');
+  const t1 = await testConnection();
+  check('Test connection (custom endpoint)', t1.ok && t1.text === 'Hello from custom.', JSON.stringify(t1));
+  sec.remove('custom');
+  const t2 = await testConnection();
+  check('Test connection without a key explains what to do', !t2.ok && t2.error.code === 'no_key', JSON.stringify(t2.error));
+  let badURL = false;
+  try { settings.set('customBaseURL', 'http://example.com/v1'); } catch { badURL = true; }
+  check('plain http base URLs only allowed for localhost', badURL);
+  settings.set('aiProvider', 'anthropic');
+  mock.server.close();
+
   // ---- settings ----
   settings.set('personality', 'sleepy');
   check('personality applied', brain.personalityId === 'sleepy');
@@ -350,6 +460,19 @@ async function run({ app, petWin, brain, settings, openSettings, getPopup, getSe
   const cards = sw && await sw.webContents.executeJavaScript('document.querySelectorAll("label.card").length');
   check('settings lists 6 personalities', cards === 6, `cards=${cards}`);
   const moodText = sw && await sw.webContents.executeJavaScript('document.getElementById("moodLabel").textContent');
+  // Full Access needs the native warning dialog's explicit yes (stubbed here: Cancel, then Enable).
+  const { dialog } = require('electron');
+  const realBox = dialog.showMessageBox;
+  let asked = 0;
+  dialog.showMessageBox = async () => { asked++; return { response: asked === 1 ? 0 : 1 }; };
+  await sw.webContents.executeJavaScript('window.tito.settings.set("securityLevel", "full")');
+  check('Full Access: Cancel in the warning keeps the current level', asked === 1 && settings.get('securityLevel') === 'guarded');
+  await sw.webContents.executeJavaScript('window.tito.settings.set("securityLevel", "full")');
+  check('Full Access: only enabled after the user confirms', asked === 2 && settings.get('securityLevel') === 'full');
+  dialog.showMessageBox = realBox;
+  settings.set('securityLevel', 'guarded');
+  const keyLeak = await sw.webContents.executeJavaScript('document.body.innerText');
+  check('settings page never shows a saved key', !keyLeak.includes('GOODKEY') && keyLeak.includes('ending …3456'));
   check('settings shows the current mood', /^Feeling /.test(moodText || ''), moodText);
   if (sw) {
     await shot(sw, 'settings.png');

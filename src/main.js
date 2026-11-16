@@ -1,7 +1,7 @@
 // Tito — main process.
 // Autonomous pet with personalities that walks on the desktop floor and on app windows,
 // click -> Settings/Chat popup, double-click -> size slider, drag & drop with falling.
-const { app, BrowserWindow, screen, ipcMain, protocol, net, Tray, Menu, nativeImage, powerMonitor } = require('electron');
+const { app, BrowserWindow, screen, ipcMain, protocol, net, Tray, Menu, nativeImage, powerMonitor, dialog } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const { spawn, execFile } = require('child_process');
@@ -10,6 +10,9 @@ const { Brain } = require('./brain');
 const { Settings, SIZE_MIN, SIZE_MAX } = require('./settings');
 const { personalityList, STAY_POSES } = require('./personalities');
 const { Mood } = require('./mood');
+const { SecretStore } = require('./ai/secrets');
+const { createProvider, normalizeError, MODEL_SUGGESTIONS } = require('./ai/providers');
+const { LEVELS, PERM_TOGGLES } = require('./ai/permissions');
 
 const ROOT = path.join(__dirname, '..');
 // Base window box at size 1. Sprites are normalised so Tito looks the same size in every
@@ -38,6 +41,7 @@ let brain = null;
 let settings = null;
 let windowFeed = null;
 let mood = null;
+let secrets = null;
 
 const pageURL = name => `tito://app/src/renderer/${name}`;
 const petDims = size => ({ W: Math.round(BASE_W * size), H: Math.round(BASE_H * size) });
@@ -312,13 +316,80 @@ function registerIpc() {
 
   ipcMain.handle('settings:get', e => {
     if (!fromSettings(e)) throw new Error('denied');
-    return { settings: settings.all(), personalities: personalityList(), sizeRange: [SIZE_MIN, SIZE_MAX], stayPoses: STAY_POSES, mood: mood && mood.summary() };
+    return {
+      settings: settings.all(), personalities: personalityList(), sizeRange: [SIZE_MIN, SIZE_MAX],
+      stayPoses: STAY_POSES, mood: mood && mood.summary(), ai: aiStatus(),
+      security: { levels: LEVELS, toggles: PERM_TOGGLES },
+    };
   });
-  ipcMain.handle('settings:set', (e, key, value) => {
+  ipcMain.handle('settings:set', async (e, key, value) => {
     if (!fromSettings(e)) throw new Error('denied');
+    // Full Access needs an explicit yes in a native dialog (only the user's own click counts).
+    if (key === 'securityLevel' && value === 'full' && settings.get('securityLevel') !== 'full') {
+      const { response } = await dialog.showMessageBox(settingsWin, {
+        type: 'warning',
+        buttons: ['Cancel', 'Enable Full Access'],
+        defaultId: 0,
+        cancelId: 0,
+        message: 'Give Tito full access to your computer?',
+        detail: 'With Full Access, Tito can click, type, open apps, change and delete files, and send messages '
+          + 'without asking you first, including irreversible actions. Mistakes or instructions hidden in '
+          + 'web pages or files could cause real damage.\n\nYou can press Esc to stop any action, and switch back '
+          + 'to Guarded at any time.',
+      });
+      if (response !== 1) return settings.all();
+    }
     settings.set(key, value);
     return settings.all();
   });
+
+  // ---- AI provider: keys and connection test (keys never travel back to the renderer) ----
+  ipcMain.handle('ai:save-key', (e, provider, key) => {
+    if (!fromSettings(e)) throw new Error('denied');
+    try { secrets.set(provider, key); return { ok: true, ai: aiStatus() }; }
+    catch (err) { return { ok: false, error: err.message, ai: aiStatus() }; }
+  });
+  ipcMain.handle('ai:remove-key', (e, provider) => {
+    if (!fromSettings(e)) throw new Error('denied');
+    secrets.remove(provider);
+    return { ok: true, ai: aiStatus() };
+  });
+  ipcMain.handle('ai:test', async e => {
+    if (!fromSettings(e)) throw new Error('denied');
+    return testConnection();
+  });
+}
+
+// ---------- AI provider ----------
+function aiStatus() {
+  return { keys: secrets.status(), encryptionAvailable: secrets.available(), suggestions: MODEL_SUGGESTIONS };
+}
+
+// The provider currently chosen in Settings, with its key decrypted just in time.
+function currentProvider(overrides = {}) {
+  const provider = settings.get('aiProvider');
+  const model = provider === 'anthropic' ? settings.get('anthropicModel')
+    : provider === 'openai' ? settings.get('openaiModel') : settings.get('customModel');
+  return createProvider({
+    provider, model, apiKey: secrets.get(provider),
+    baseURL: provider === 'custom' ? settings.get('customBaseURL') : undefined,
+    ...overrides,
+  });
+}
+
+async function testConnection(overrides) {
+  const provider = settings.get('aiProvider');
+  const key = secrets.get(provider);
+  const t0 = Date.now();
+  try {
+    const p = currentProvider(overrides);
+    const r = await p.sendMessage([{ role: 'user', content: 'Reply with exactly: Tito is connected.' }],
+      { maxTokens: 200, effort: 'low' });
+    if (r.refused) return { ok: false, error: { code: 'refused', message: 'The model declined the test message.' } };
+    return { ok: true, text: r.text.trim().slice(0, 200), model: r.model, ms: Date.now() - t0 };
+  } catch (err) {
+    return { ok: false, error: normalizeError(err, [key]) };
+  }
 }
 
 // ---------- settings window (native macOS blur behind translucent "glass" cards) ----------
@@ -365,6 +436,7 @@ app.whenReady().then(() => {
   if (isMac && app.dock) app.dock.hide();
   serveAppFiles();
   settings = new Settings();
+  secrets = new SecretStore();
   settings.on('change', (key, value) => {
     if (key === 'personality' && brain) brain.setPersonality(value);
     if (settingsWin && !settingsWin.isDestroyed() && key !== 'size') settingsWin.webContents.send('settings:changed', settings.all());
@@ -387,8 +459,9 @@ app.whenReady().then(() => {
   if (process.env.TITO_SMOKE) {
     require('./smoke').run({
       app, petWin, brain, settings, openSettings, openPopup, checkActivity, getMood: () => mood,
+      getSecrets: () => secrets, testConnection,
       getPopup: () => ({ win: popupWin, kind: popupKind }), getSettingsWin: () => settingsWin,
-    });
+    }).catch(e => { console.log('SMOKE ERROR', e && e.stack); app.exit(3); });
   }
   if (process.env.TITO_RECORD) require('./record').run({ app, petWin, brain });
 });

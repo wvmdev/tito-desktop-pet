@@ -34,4 +34,9 @@ contextBridge.exposeInMainWorld('tito', {
     onChanged: cb => ipcRenderer.on('settings:changed', (_e, all) => cb(all)),
     onMood: cb => ipcRenderer.on('settings:mood', (_e, m) => cb(m)),
   },
+  ai: {
+    saveKey: (provider, key) => ipcRenderer.invoke('ai:save-key', provider, key),
+    removeKey: provider => ipcRenderer.invoke('ai:remove-key', provider),
+    test: () => ipcRenderer.invoke('ai:test'),
+  },
 });

@@ -5,6 +5,20 @@ const fs = require('fs');
 const path = require('path');
 const EventEmitter = require('events');
 const { PERSONALITIES, DEFAULT_PERSONALITY, STAY_POSES } = require('./personalities');
+const { LEVELS, DEFAULT_PERMS, validatePerms } = require('./ai/permissions');
+const { DEFAULT_MODELS } = require('./ai/providers');
+
+const MODEL_RE = /^[A-Za-z0-9._:\/@-]{1,120}$/;
+// Custom endpoints: https anywhere, plain http only for this machine (local model servers).
+function validBaseURL(v) {
+  if (v === '') return '';
+  try {
+    const u = new URL(v);
+    const local = ['localhost', '127.0.0.1', '[::1]'].includes(u.hostname);
+    if (u.protocol === 'https:' || (u.protocol === 'http:' && local)) return u.toString().replace(/\/$/, '');
+  } catch { /* invalid */ }
+  return null;
+}
 
 const SIZE_MIN = 0.5;
 const SIZE_MAX = 2;
@@ -16,6 +30,13 @@ const DEFAULTS = {
   sleepAfterMin: 5,       // fall asleep after this many minutes without mouse/keyboard; 0 = never
   weatherEnabled: true,   // let weather influence mood (uses approximate location, see mood.js)
   locationOverride: '',   // city name; empty = approximate location from IP
+  aiProvider: 'anthropic',
+  anthropicModel: DEFAULT_MODELS.anthropic,
+  openaiModel: DEFAULT_MODELS.openai,
+  customModel: '',
+  customBaseURL: '',
+  securityLevel: 'guarded',
+  actionPerms: DEFAULT_PERMS,
 };
 
 const VALIDATORS = {
@@ -26,6 +47,13 @@ const VALIDATORS = {
   stayPose: v => (STAY_POSES.some(p => p.id === v) ? v : null),
   sleepAfterMin: v => (Number.isInteger(v) && v >= 0 && v <= 240 ? v : null),
   weatherEnabled: v => (typeof v === 'boolean' ? v : null),
+  aiProvider: v => (['anthropic', 'openai', 'custom'].includes(v) ? v : null),
+  anthropicModel: v => (typeof v === 'string' && MODEL_RE.test(v.trim()) ? v.trim() : null),
+  openaiModel: v => (typeof v === 'string' && MODEL_RE.test(v.trim()) ? v.trim() : null),
+  customModel: v => (typeof v === 'string' && (v.trim() === '' || MODEL_RE.test(v.trim())) ? v.trim() : null),
+  customBaseURL: v => (typeof v === 'string' ? validBaseURL(v.trim()) : null),
+  securityLevel: v => (LEVELS.includes(v) ? v : null),
+  actionPerms: v => validatePerms(v),
   locationOverride: v => (typeof v === 'string' ? v.replace(/[\u0000-\u001f]/g, '').trim().slice(0, 80) : null),
 };
 
@@ -50,7 +78,7 @@ class Settings extends EventEmitter {
     if (!(key in VALIDATORS)) throw new Error(`Unknown setting: ${key}`);
     const v = VALIDATORS[key](value);
     if (v === null) throw new Error(`Invalid value for ${key}`);
-    if (v === this.data[key]) return;
+    if (JSON.stringify(v) === JSON.stringify(this.data[key])) return;
     this.data[key] = v;
     // Debounced write: the size slider fires many changes per second.
     clearTimeout(this._saveTimer);
