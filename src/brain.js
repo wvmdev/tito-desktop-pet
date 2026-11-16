@@ -9,6 +9,7 @@
 const { screen } = require('electron');
 const EventEmitter = require('events');
 const { PERSONALITIES, DEFAULT_PERSONALITY } = require('./personalities');
+const SPRITE = require('./sprite-metrics'); // visible extent of every animation (tools/metrics.js)
 
 const FRAME_MS = 550;
 const LOOP_MS = FRAME_MS * 8;
@@ -19,10 +20,10 @@ const STALK_SPEED = 22;
 const CLIMB_SPEED = 150;
 const GRAVITY = 2600;    // px/s²
 const MAX_FALL = 2200;
-const EDGE_MARGIN = 60;  // window may overhang the screen edge (sprite is centred in it)
 const LEDGE_INSET = 28;  // keep Tito's feet this far inside a window's top edge
 const SNAP_UP = 40;      // dropped this close below a window top -> stand on it
 const HEADROOM = 135;    // px above a window top needed for Tito's body (sitting height at size 1)
+const MOUSE_CHANCE = 0.2; // 1 in 5 walks/runs head for the mouse pointer (unless an app is full screen)
 
 // Animation playback rates chosen so feet roughly match ground speed.
 const WALK_ANIM = 2.2;
@@ -45,12 +46,13 @@ function pickWeighted(entries) {
 }
 
 class Brain extends EventEmitter {
-  constructor({ width, height, setPosition, play, personality = DEFAULT_PERSONALITY, size = 1 }) {
+  constructor({ width, height, setPosition, play, getCursor = null, personality = DEFAULT_PERSONALITY, size = 1 }) {
     super();
     this.W = width;
     this.H = height;
     this.size = size;
     this._setPos = setPosition;
+    this.getCursor = getCursor; // () => { x, y } screen point of the mouse pointer
     this._play = play;
     this.mode = 'init';
     this.facing = 'left';
@@ -119,12 +121,19 @@ class Brain extends EventEmitter {
   }
   standY() { return this.surfaceTop() - this.H; }
 
-  // Horizontal range for Tito's window x on the current surface.
-  xBounds() {
+  // Half the visible width of an animation, in px at the current size: how far Tito's visible
+  // pixels reach from the window centre. The whole sprite must stay on screen, so this (not the
+  // window) decides how close to the screen edge he can get.
+  _halfW(anim = this.anim) { const m = SPRITE[anim]; return ((m && m.half) || 100) * this.size; }
+
+  // Horizontal range for Tito's window x: whole sprite on the display, and on a window's top
+  // edge while he stands on a window.
+  xBounds(anim = this.anim) {
     const a = this.area();
-    let lo = a.x - EDGE_MARGIN;
-    let hi = a.x + a.width - this.W + EDGE_MARGIN;
-    if (this.surface.kind === 'window') {
+    const h = this._halfW(anim);
+    let lo = a.x + h - this.W / 2;
+    let hi = a.x + a.width - h - this.W / 2;
+    if (this.surface.kind === 'window' && this._standsOnSurface()) {
       const w = this._win(this.surface.id);
       if (w) {
         lo = Math.max(lo, w.x + LEDGE_INSET - this.W / 2);
@@ -178,6 +187,7 @@ class Brain extends EventEmitter {
       this.surface = { kind: 'ground' };
       this.x = this.area().x + 200; this.y = this.standY();
     }
+    this._clampX(); // never let any part of him leave the screen
     this._setPos(Math.round(this.x) || 0, Math.round(this.y) || 0);
   }
   _setMode(mode, info = {}) { this.mode = mode; this.emit('mode', mode, info); }
@@ -185,6 +195,7 @@ class Brain extends EventEmitter {
   _after(ms, fn) { clearTimeout(this._timer); this._timer = setTimeout(fn, ms); }
   _anim(name, speed = 1, extra = {}) {
     this.anim = name;
+    if (this.mode !== 'init') { this._clampX(); this._commit(); } // a wider pose may need a nudge inwards
     this._play({ name, facing: this.facing, speed, ...extra });
   }
   _tick() {
@@ -214,8 +225,8 @@ class Brain extends EventEmitter {
   }
 
   // Prefer to keep going the way he's facing; turn around only when there's little room ahead.
-  _chooseDir(minRoom) {
-    const [lo, hi] = this.xBounds();
+  _chooseDir(minRoom, anim = this.anim) {
+    const [lo, hi] = this.xBounds(anim);
     const ahead = this.facing === 'left' ? this.x - lo : hi - this.x;
     const behind = this.facing === 'left' ? hi - this.x : this.x - lo;
     const keep = ahead >= minRoom && (Math.random() < 0.75 || behind < minRoom);
@@ -232,6 +243,7 @@ class Brain extends EventEmitter {
 
   _travelTo(target, { mode, anim, animSpeed, speed, onArrive, info = {}, ignoreWindow = null }) {
     this._clear();
+    { const [lo, hi] = this.xBounds(anim); target = Math.min(hi, Math.max(lo, target)); } // stay on screen in the walking pose
     const dir = Math.sign(target - this.x) || 1;
     this.facing = dir < 0 ? 'left' : 'right';
     this.y = this.standY();
@@ -250,9 +262,9 @@ class Brain extends EventEmitter {
     };
   }
 
-  _travel(mode, anim, animSpeed, speed, minDist, maxDist) {
+  _travel(mode, anim, animSpeed, speed, minDist, maxDist, onArrive = null) {
     const s = this.size;
-    const { dir, room } = this._chooseDir(minDist * s);
+    const { dir, room } = this._chooseDir(minDist * s, anim);
     let dist = Math.min(room, rand(minDist, maxDist) * s);
     // On a window ledge, sometimes walk right off the end and drop down.
     if (this.surface.kind === 'window' && room < maxDist * s && Math.random() < 0.3) dist = room + 60 * s;
@@ -261,10 +273,49 @@ class Brain extends EventEmitter {
 
   walk() {
     const s = this.p.walkSpeed;
-    this._travel('walk', 'caminando', WALK_ANIM * s, WALK_SPEED * s * this.size, 120, 520);
+    const spec = { mode: 'walk', anim: 'caminando', animSpeed: WALK_ANIM * s, speed: WALK_SPEED * s * this.size };
+    if (this._goToMouse(spec)) return;
+    this._travel('walk', 'caminando', spec.animSpeed, spec.speed, 120, 520);
   }
 
-  run() { this._travel('run', 'corriendo', RUN_ANIM, RUN_SPEED * this.size, 250, 800); }
+  run() {
+    const spec = { mode: 'run', anim: 'corriendo', animSpeed: RUN_ANIM, speed: RUN_SPEED * this.size };
+    if (this._goToMouse(spec)) return;
+    this._travel('run', 'corriendo', spec.animSpeed, spec.speed, 250, 800);
+  }
+
+  // Is any app covering the whole display (full-screen app or video)?
+  fullscreenHere() {
+    const d = screen.getDisplayNearestPoint({ x: Math.round(this.footX()), y: Math.round(this.footY() - 10) }).bounds;
+    return this.windows.some(w => w.x <= d.x + 2 && w.y <= d.y + 2 && w.w >= d.width - 4 && w.h >= d.height - 4);
+  }
+
+  // One walk/run in five heads for the mouse pointer, stopping beside it. Never while an app is
+  // full screen, never when the pointer is already close or on another display.
+  _goToMouse(spec) {
+    if (!this.getCursor || Math.random() >= MOUSE_CHANCE) return false;
+    if (this.fullscreenHere()) return false;
+    const c = this.getCursor();
+    const a = this.area();
+    if (!c || c.x < a.x || c.x > a.x + a.width) return false;
+    const fx = this.footX();
+    if (Math.abs(c.x - fx) < 140 * this.size) return false;
+    const dir = c.x > fx ? 1 : -1;
+    const [lo, hi] = this.xBounds(spec.anim);
+    const target = Math.min(hi, Math.max(lo, c.x - dir * 70 * this.size - this.W / 2));
+    if (Math.abs(target - this.x) < 40) return false;
+    this._travelTo(target, { ...spec, info: { mouse: true }, onArrive: () => this._arriveAtMouse() });
+    return true;
+  }
+
+  // Reached the pointer: look at it for a moment.
+  _arriveAtMouse() {
+    this._clear();
+    this._setMode('idle', { name: 'curioso', mouse: true });
+    const speed = this.p.animSpeed;
+    this._anim('curioso', speed);
+    this._after(LOOP_MS / speed, () => this.next());
+  }
 
   // A few hops in a row: saltando frames 0 crouch, 1-3 airborne, 4 touch-down, 5-7 settle.
   hops(count = Math.round(rand(2, 4)), opts = {}) {
@@ -272,7 +323,7 @@ class Brain extends EventEmitter {
     const s = this.size;
     const dist = (opts.dist || 75) * s;
     const height = (opts.height || 48) * s;
-    const { dir } = this._chooseDir(dist * 1.5);
+    const { dir } = this._chooseDir(dist * 1.5, 'saltando');
     this.facing = dir < 0 ? 'left' : 'right';
     this._setMode('hop', { count, dir });
     const frameMs = FRAME_MS / HOP_ANIM;
@@ -311,7 +362,7 @@ class Brain extends EventEmitter {
   // Creep forward low (cazando), then pounce with one big hop.
   stalk() {
     this._clear();
-    const { dir } = this._chooseDir(200 * this.size);
+    const { dir } = this._chooseDir(200 * this.size, 'cazando');
     this.facing = dir < 0 ? 'left' : 'right';
     this.y = this.standY();
     this._setMode('stalk', { dir });
@@ -595,7 +646,14 @@ class Brain extends EventEmitter {
 
   dragMove(x, y) {
     if (this.mode !== 'held') return;
-    this.x = x; this.y = y; this._commit();
+    // The window may hang off the screen where it's empty, but not the cat: keep his visible
+    // pixels inside the display while he is carried.
+    const d = screen.getDisplayNearestPoint({ x: Math.round(x + this.W / 2), y: Math.round(y + this.H / 2) }).bounds;
+    const m = SPRITE[this.anim];
+    const visH = (m ? m.height : this.H) * this.size;
+    this.x = x;
+    this.y = Math.min(d.y + d.height - this.H, Math.max(d.y - (this.H - visH), y));
+    this._commit();
   }
 
   dragEnd() {
@@ -618,8 +676,7 @@ class Brain extends EventEmitter {
   // The flailing pose (resbalando frames 2-4) starts on the very first frame of the fall.
   _fall() {
     this._clear();
-    const a = this.area();
-    this.x = Math.min(a.x + a.width - this.W + EDGE_MARGIN, Math.max(a.x - EDGE_MARGIN, this.x));
+    this._clampX();
     const start = this.footY();
     const now = this._surfaceBetween(this.footX(), start - 2, start + 2);
     if (now) { this._setSurface(now); this.y = now.top - this.H; this._commit(); this._land(false); return; }

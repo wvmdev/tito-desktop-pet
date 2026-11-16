@@ -26,13 +26,13 @@ const nativeFacing = name => NATIVE_FACING[name] || 'L';
 // with tools/measure.js; hand-estimated where the eyes are closed/hidden) is used as a ruler so
 // Tito renders at the same size in every animation.
 const EYE_PX = {
-  sentado: 45, caminando: 54, de_pie: 52, tumbado: 37, mirando_arriba: 45, mirando_izquierda: 49,
-  mirando_derecha: 43, levantando_pata: 33, panza_arriba: 38, jugando: 34, escalando: 51,
-  escondido: 35, teletransportarse: 46, asustado: 31, cazando: 28, corriendo: 45, buscando: 30,
-  cazando_mariposas: 30, saltando: 29, resbalando: 30, saludando: 50, sacudiendose: 49,
-  estirandose: 31, triunfante: 34, bebiendo: 33, jugando_pelota: 34, durmiendo: 37,
-  bostezando: 45, comiendo: 33, curioso: 41, enfadado: 36, dando_amor: 41, celebrando: 40,
-  cansado: 37, sorprendido: 44, vomitando: 50,
+  sentado: 45, caminando: 54, de_pie: 52, tumbado: 40, mirando_arriba: 45, mirando_izquierda: 54,
+  mirando_derecha: 54, levantando_pata: 43, panza_arriba: 50, jugando: 42, escalando: 51,
+  escondido: 60, teletransportarse: 40, asustado: 39, cazando: 36, corriendo: 45,
+  buscando: 36, cazando_mariposas: 37, saltando: 38, resbalando: 33, saludando: 50,
+  sacudiendose: 52, estirandose: 37, triunfante: 43, bebiendo: 36, jugando_pelota: 38,
+  durmiendo: 38, bostezando: 40, comiendo: 30, curioso: 38, enfadado: 36, dando_amor: 41,
+  celebrando: 40, cansado: 37, sorprendido: 43, vomitando: 55,
 };
 const REF_EYE = 45; // sentado is the reference
 const sizeFactor = name => REF_EYE / (EYE_PX[name] || REF_EYE);

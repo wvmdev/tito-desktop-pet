@@ -16,6 +16,14 @@ const { classify, validate } = require('./tools');
 const { cleanTask, describeTask } = require('../tasks');
 
 const MAX_STEPS = 25;
+// Tools that need to see the screen. Models without image input (e.g. gpt-oss) can't use them.
+const BLIND_TOOLS = ['take_screenshot', 'click', 'scroll'];
+const IMAGE_ERR = /image|vision|multimodal|must be a string|expected (a )?string|unsupported.*content/i;
+function stripImages(convo) {
+  let n = 0;
+  for (const m of convo) if (m.role === 'tool') for (const r of m.results) if (r.image) { delete r.image; r.text += ' [The image was removed: this model cannot see images.]'; n++; }
+  return n;
+}
 const ORDER = { allow: 0, ask: 1, deny: 2 };
 
 const short = (s, n = 80) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
@@ -59,8 +67,10 @@ function abortError() { return Object.assign(new Error('aborted'), { name: 'Abor
  * @param o.signal        AbortSignal
  * @param o.secrets       strings to scrub from anything returned to the model
  */
-async function runAgentTurn({ provider, system, messages, tools, executor, getPolicy, confirm, emit, signal, secrets = [] }) {
+async function runAgentTurn({ provider, system, messages, tools, executor, getPolicy, confirm, emit, signal, secrets = [], onNoVision = null }) {
   const convo = messages.slice();
+  let curTools = tools;
+  let blind = false;
   const texts = [];
   let refused = false;
   let model = null;
@@ -68,7 +78,22 @@ async function runAgentTurn({ provider, system, messages, tools, executor, getPo
 
   for (let step = 0; ; step++) {
     if (signal.aborted) throw abortError();
-    const r = await provider.sendMessage(convo, { system, tools, signal, onText: d => emit('delta', d) });
+    let r;
+    try {
+      r = await provider.sendMessage(convo, { system, tools: curTools, signal, onText: d => emit('delta', d) });
+    } catch (err) {
+      // A model that can't take images rejects the request once a screenshot is in it. Drop the
+      // images, switch off the tools that need sight, and carry on with keyboard-only control.
+      if (!blind && err && err.status === 400 && IMAGE_ERR.test(String(err.message || '')) && stripImages(convo) > 0) {
+        blind = true;
+        curTools = curTools.filter(t => !BLIND_TOOLS.includes(t.name));
+        if (onNoVision) onNoVision();
+        emit('action', { id: 'vision', title: 'This model cannot see images', status: 'error', note: 'Screenshots and clicking are off for it. Pick a model with vision in Settings to use them.' });
+        step--;
+        continue;
+      }
+      throw err;
+    }
     if (signal.aborted) throw abortError(); // some streams end quietly on abort
     model = r.model;
     if (r.refused) { refused = true; break; }
@@ -90,6 +115,11 @@ async function runAgentTurn({ provider, system, messages, tools, executor, getPo
         continue;
       }
       const d = describe(call.name, call.input);
+      if (blind && BLIND_TOOLS.includes(call.name)) {
+        emit('action', { id, ...d, status: 'blocked', note: 'this model cannot see images' });
+        results.push({ ...base, text: 'This model cannot see images, so screenshots, clicking and scrolling are unavailable. Use open_app, press_key and type_text instead, and tell the user what to check.', isError: true });
+        continue;
+      }
       const reason = typeof call.input.reason === 'string' ? short(call.input.reason, 200) : '';
 
       // Permission: strictest answer across everything this call needs.
@@ -132,4 +162,4 @@ async function runAgentTurn({ provider, system, messages, tools, executor, getPo
   return { text: texts.join('\n\n'), refused, model, steps: n };
 }
 
-module.exports = { runAgentTurn, describe, MAX_STEPS };
+module.exports = { runAgentTurn, describe, MAX_STEPS, BLIND_TOOLS };

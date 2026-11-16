@@ -61,6 +61,11 @@ function startMockAI() {
         res.writeHead(200, { 'content-type': 'application/json' });
         res.end(JSON.stringify({ object: 'list', data: [{ id: 'models/gemini-test-pro', object: 'model' }, { id: 'local-llm', object: 'model' }] }));
       } else if (req.url.startsWith('/v1/chat/completions')) {
+        if (state.rejectImages && JSON.stringify(seen.at(-1).body).includes('image_url')) {
+          res.writeHead(400, { 'content-type': 'application/json' });
+          res.end(JSON.stringify({ error: { message: "'messages.3' : for 'role:user' the following must be satisfied: 'messages.3.content' : value must be a string", type: 'invalid_request_error' } }));
+          return;
+        }
         res.writeHead(200, { 'content-type': 'text/event-stream' });
         const msgs = (seen.at(-1).body || {}).messages || [];
         const last = String((msgs[msgs.length - 1] || {}).content || '');
@@ -359,6 +364,88 @@ async function run({ app, petWin, brain, settings, openSettings, getPopup, getSe
   }
   brain.setWindows([]);
   await wait(1500);
+
+  // ---- the whole sprite stays on screen ----
+  const SPRITE = require('./sprite-metrics');
+  const disp = screen.getPrimaryDisplay();
+  brain.setWindows([]);
+  await settle();
+  brain.surface = { kind: 'ground' };
+  let offs = [];
+  for (const anim of ['corriendo', 'mirando_derecha', 'cazando', 'sentado', 'escalando']) {
+    brain._anim(anim);
+    for (const x of [-2000, 5000]) {
+      brain.x = x; brain.y = brain.standY(); brain._commit();
+      const left = brain.footX() - SPRITE[anim].half, right = brain.footX() + SPRITE[anim].half;
+      if (left < wa.x - 1 || right > wa.x + wa.width + 1) offs.push(`${anim}@${x}: ${Math.round(left)}..${Math.round(right)}`);
+    }
+  }
+  check('sprite never leaves the screen horizontally (any animation, both edges)', offs.length === 0, offs.join('; '));
+  brain.mode = 'idle'; brain.idle({ forever: true });
+  brain.dragStart();
+  brain.dragMove(-3000, -3000);
+  const hb = brain.anim && SPRITE[brain.anim];
+  check('carrying him far off screen keeps all of him on the display', brain.footX() - hb.half >= disp.bounds.x - 1 && brain.y + (brain.H - hb.height * brain.size) >= disp.bounds.y - 1,
+    `x=${Math.round(brain.footX())} y=${Math.round(brain.y)} anim=${brain.anim}`);
+  brain.dragMove(9000, 9000);
+  check('...and at the bottom-right corner', brain.footX() + hb.half <= disp.bounds.x + disp.bounds.width + 1 && brain.footY() <= disp.bounds.y + disp.bounds.height + 1);
+  brain.dragEnd();
+  await wait(1500);
+  await settle();
+  // wide poses are planned with their own width: a long run along the edge reaches its target
+  brain.x = wa.x + 200; brain.facing = 'left'; brain.y = brain.standY(); brain._commit();
+  const runModes = [];
+  const onMode = (m, info) => runModes.push({ m, info });
+  brain.on('mode', onMode);
+  Math.random = () => 0.5;
+  brain.run();
+  Math.random = realRandom;
+  const rt = runModes.find(m => m.m === 'run').info.target;
+  const [lo0] = brain.xBounds('corriendo');
+  check('run target respects the running pose width at the screen edge', rt >= lo0 - 0.5, `target=${rt} min=${Math.round(lo0)}`);
+  brain.off('mode', onMode);
+  await settle();
+
+  // ---- one walk in five heads for the mouse, unless an app is full screen ----
+  const cursor = { x: wa.x + 700, y: 300 };
+  brain.getCursor = () => cursor;
+  const mouseWalk = async (rand, windows = []) => {
+    brain.setWindows(windows);
+    await settle();
+    brain.surface = { kind: 'ground' };
+    brain.facing = 'left';
+    brain.x = wa.x + 300 - brain.W / 2; brain.y = brain.standY(); brain._commit();
+    const seenModes = [];
+    const on = (m, info) => seenModes.push({ m, info });
+    brain.on('mode', on);
+    Math.random = () => rand;
+    brain.walk();
+    Math.random = realRandom;
+    brain.off('mode', on);
+    return seenModes.find(m => m.m === 'walk');
+  };
+  const w1 = await mouseWalk(0.19);
+  check('a walk (1 chance in 5) heads for the mouse pointer', w1 && w1.info.mouse === true && w1.info.dir === 1, JSON.stringify(w1));
+  const tgtFoot = w1.info.target + brain.W / 2;
+  check('...and stops beside the pointer, not on it', Math.abs(tgtFoot - (cursor.x - 70)) <= 1, `targetFoot=${Math.round(tgtFoot)} cursor=${cursor.x}`);
+  const w2 = await mouseWalk(0.21);
+  check('the other four walks in five ignore the mouse', w2 && !w2.info.mouse, JSON.stringify(w2));
+  const w3 = await mouseWalk(0.0, [{ id: 90, pid: 90, x: disp.bounds.x, y: disp.bounds.y, w: disp.bounds.width, h: disp.bounds.height }]);
+  check('with an app in full screen he never goes for the mouse', brain.fullscreenHere() && w3 && !w3.info.mouse, JSON.stringify(w3));
+  const w4 = await mouseWalk(0.0, [{ id: 91, pid: 91, x: 100, y: 200, w: 900, h: 500 }]);
+  check('an ordinary window does not count as full screen', !brain.fullscreenHere() && w4 && w4.info.mouse === true, JSON.stringify(w4));
+  // Arrives and looks at the pointer.
+  cursor.x = wa.x + 560;
+  const w5 = await mouseWalk(0.0);
+  let arrived = false;
+  for (let i = 0; i < 80 && !arrived; i++) { await wait(100); arrived = brain.mode === 'idle' && brain.anim === 'curioso'; }
+  check('he reaches the pointer and looks at it (curioso)', w5 && arrived && Math.abs(brain.footX() - (cursor.x - 70)) <= 3, `foot=${Math.round(brain.footX())} anim=${brain.anim}`);
+  cursor.x = wa.x + 340; // start foot is at wa.x + 300
+  const w6 = await mouseWalk(0.0);
+  check('a pointer that is already close does not trigger the trip', w6 && !w6.info.mouse);
+  brain.getCursor = null;
+  brain.setWindows([]);
+  await settle();
 
   // ---- stay still ----
   settings.set('stayPose', 'durmiendo');
@@ -768,6 +855,31 @@ async function run({ app, petWin, brain, settings, openSettings, getPopup, getSe
   check('Claude: thinking block replayed unchanged, in order', asst[0].type === 'thinking' && asst[0].signature === 'SIG-123' && asst.at(-1).type === 'tool_use', JSON.stringify(asst.map(b => b.type)));
   check('Claude: tool result carries text + redacted screenshot', tr.type === 'tool_result' && tr.tool_use_id === 'toolu_1' && tr.content[1].type === 'image' && a2.tools.length === 13 && a2.system === 'sys');
   amock.server.close();
+
+  // A model without image input: the screenshot is dropped, sight tools switch off, work carries on.
+  const vmock = await startMockAI();
+  vmock.state.rejectImages = true;
+  vmock.state.script = [
+    { calls: [{ id: 'v1', name: 'take_screenshot', args: { reason: R } }] },   // rejected once the image is in the request
+    { calls: [{ id: 'v2', name: 'open_app', args: { name: 'Notes', reason: R } }] },
+    { text: 'Opened Notes.' },
+  ];
+  const visionP = createProvider({ provider: 'custom', apiKey: 'local-key-1234567890', model: 'text-only', baseURL: `http://127.0.0.1:${vmock.port}/v1`, maxRetries: 0 });
+  const evts = [];
+  let noVisionFlag = false;
+  fake.calls = [];
+  settings.set('securityLevel', 'trusted');
+  const vr = await runAgentTurn({
+    provider: visionP, system: 'sys', messages: [{ role: 'user', content: 'open notes' }], tools: require('./ai/tools').availableTools('trusted', settings.get('actionPerms')),
+    executor: ex, getPolicy: () => ({ level: 'trusted', perms: settings.get('actionPerms') }), confirm: async () => 'deny',
+    emit: (t, d) => evts.push([t, d]), signal: new AbortController().signal, onNoVision: () => { noVisionFlag = true; },
+  });
+  const lastTools = (vmock.seen.at(-1).body.tools || []).map(t => t.function.name);
+  check('text-only model: images dropped, screenshot/click/scroll switched off, the rest still works',
+    noVisionFlag && vr.text.includes('Opened Notes.') && fake.calls.some(c => c.open === 'Notes') && !lastTools.includes('take_screenshot') && !lastTools.includes('click') && lastTools.includes('open_app')
+    && evts.some(([t, d]) => t === 'action' && d.id === 'vision'), JSON.stringify({ noVisionFlag, text: vr.text, lastTools }));
+  vmock.server.close();
+  settings.set('securityLevel', 'guarded');
 
   // The real redaction helper, on a real image containing a fake key.
   const { BrowserWindow } = require('electron');

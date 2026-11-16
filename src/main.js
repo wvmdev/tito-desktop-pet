@@ -33,12 +33,19 @@ protocol.registerSchemesAsPrivileged([
 ]);
 
 // Dev runs (smoke test / recorder) use a throwaway profile so they never touch real settings.
-if (process.env.TITO_SMOKE || process.env.TITO_RECORD || process.env.TITO_SHOT) {
-  app.setPath('userData', path.join(require('os').tmpdir(), `tito-dev-${process.pid}`));
+if (process.env.TITO_SMOKE || process.env.TITO_RECORD || process.env.TITO_SHOT || process.env.TITO_DEV_DROP || process.env.TITO_TRIAL) {
+  const real = app.getPath('userData');
+  const tmp = path.join(require('os').tmpdir(), `tito-dev-${process.pid}`);
+  app.setPath('userData', tmp);
+  // A trial uses the user's saved provider/model/key from a COPY of the profile (the real one is never written).
+  if (process.env.TITO_TRIAL) {
+    fs.mkdirSync(tmp, { recursive: true });
+    for (const f of ['settings.json', 'secrets.json']) { try { fs.copyFileSync(path.join(real, f), path.join(tmp, f)); } catch { /* none yet */ } }
+  }
 }
 
 // One Tito at a time: launching again just brings the existing one's Settings forward.
-const DEV_RUN = !!(process.env.TITO_SMOKE || process.env.TITO_RECORD || process.env.TITO_SHOT);
+const DEV_RUN = !!(process.env.TITO_SMOKE || process.env.TITO_RECORD || process.env.TITO_SHOT || process.env.TITO_DEV_DROP || process.env.TITO_TRIAL);
 if (!DEV_RUN && !app.requestSingleInstanceLock()) app.exit(0);
 app.on('second-instance', () => { if (settings) openSettings(); });
 
@@ -122,6 +129,7 @@ function createPetWindow() {
     height: H,
     size,
     setPosition: placePet,
+    getCursor: () => screen.getCursorScreenPoint(),
     play: anim => petWin && !petWin.isDestroyed() && petWin.webContents.send('pet:play', anim),
     personality: settings.get('personality'),
   });
@@ -492,6 +500,7 @@ function startChat() {
     getSecrets: () => Object.keys(PROVIDERS).map(id => secrets.get(id)).filter(Boolean),
     normalizeError,
     getMood: () => mood && mood.summary(),
+    getModelKey: () => `${settings.get('aiProvider')}:${settings.get('aiModels')[settings.get('aiProvider')]}`,
     getTools: () => availableTools(settings.get('securityLevel'), settings.get('actionPerms')),
     getPolicy: () => ({ level: settings.get('securityLevel'), perms: settings.get('actionPerms') }),
     executor,
@@ -689,6 +698,32 @@ app.whenReady().then(() => {
     }).catch(e => { console.log('SMOKE ERROR', e && e.stack); app.exit(3); });
   }
   if (process.env.TITO_RECORD) require('./record').run({ app, petWin, brain });
+  if (process.env.TITO_TRIAL) {
+    brain.setStay('sentado');
+    require('./trial').run({
+      app, chat, prompts: JSON.parse(fs.readFileSync(process.env.TITO_TRIAL, 'utf8')),
+      out: process.env.TITO_TRIAL_OUT || path.join(require('os').tmpdir(), 'tito-trial.log'),
+      gapMs: +process.env.TITO_TRIAL_GAP || 15000,
+    }).catch(e => { console.log('TRIAL ERROR', e && e.stack); app.exit(3); });
+  }
+  // Dev: TITO_DEV_DROP=1 drops Tito onto the first real window the feed reports, so the result can be
+  // checked on the real screen (screencapture).
+  if (process.env.TITO_DEV_DROP) {
+    brain.setStay('sentado');
+    const iv = setInterval(() => {
+      const w = brain.windows.find(x => x.w < 900 && x.y > 200);
+      if (!w) return;
+      clearInterval(iv);
+      console.log('DROP onto', JSON.stringify(w));
+      brain.dragStart();
+      brain.dragMove(w.x + w.w / 2 - brain.W / 2, w.y - 150 - brain.H);
+      brain.dragEnd();
+      setTimeout(async () => {
+        const r = await petWin.webContents.executeJavaScript('(() => { const i = document.getElementById("tito").getBoundingClientRect(); return { imgTop: i.top, imgBottom: i.bottom, imgH: i.height, innerH: innerHeight, anim: titoPlayer.name, frame: titoPlayer.frame, nat: document.getElementById("tito").naturalHeight, style: document.getElementById("tito").style.height }; })()');
+        console.log('PROBE', JSON.stringify({ win: petWin.getBounds(), surfaceTop: w.y, foot: brain.footY(), r }));
+      }, 1500);
+    }, 300);
+  }
   // Dev: TITO_SHOT=<dir> [TITO_SHOT_PROVIDERS=groq,custom,...] screenshots the AI section of Settings.
   if (process.env.TITO_SHOT) {
     openSettings();

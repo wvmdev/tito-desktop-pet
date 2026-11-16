@@ -11,7 +11,7 @@ const { app } = require('electron');
 const fs = require('fs');
 const path = require('path');
 const EventEmitter = require('events');
-const { runAgentTurn } = require('./ai/agent');
+const { runAgentTurn, BLIND_TOOLS } = require('./ai/agent');
 
 const MAX_HISTORY = 40;       // earlier messages sent to the model
 const MAX_SAVED = 300;        // entries kept on disk
@@ -27,7 +27,10 @@ function systemPrompt({ moodLabel, tools }) {
     lines.push(
       '',
       `You can act on this Mac with these tools: ${tools.map(t => t.name).join(', ')}.`,
-      'Use them only for what the user asked in this chat. Take a screenshot before clicking, and again after acting to check the result.',
+      'Use them only for what the user asked in this chat.',
+      tools.some(t => t.name === 'take_screenshot')
+        ? 'Take a screenshot before clicking, and again after acting to check the result.'
+        : 'You cannot see the screen with this model: do not guess at positions. Use open_app, keyboard shortcuts and typing, and tell the user what to check.',
       'Prefer the simplest route (open_app, keyboard shortcuts) over many clicks. Say briefly what you did when finished.',
       'Some actions pause for the user to approve in a popup. If one is declined or blocked by their settings, stop and ask; never look for a way around it.',
       '',
@@ -53,6 +56,7 @@ class ChatSession extends EventEmitter {
     this.file = path.join(app.getPath('userData'), 'chat.json');
     this.messages = [];
     this._gen = 0;
+    this.noVision = new Set(); // models that rejected images this session
     this.busy = false;
     this._abort = null;
     try {
@@ -122,7 +126,9 @@ class ChatSession extends EventEmitter {
 
     try {
       const provider = this.d.getProvider();
-      const tools = this.d.getTools();
+      const modelKey = this.d.getModelKey ? this.d.getModelKey() : '';
+      let tools = this.d.getTools();
+      if (this.noVision.has(modelKey)) tools = tools.filter(t => !BLIND_TOOLS.includes(t.name));
       const mood = this.d.getMood && this.d.getMood();
       if (this.d.onTurnStart) this.d.onTurnStart(tools.length > 0);
       const r = await runAgentTurn({
@@ -136,6 +142,7 @@ class ChatSession extends EventEmitter {
         emit,
         signal: abort.signal,
         secrets: this.d.getSecrets(),
+        onNoVision: () => this.noVision.add(modelKey),
       });
       if (gen !== this._gen) return { ok: false };
       if (r.refused && !progressed()) {
