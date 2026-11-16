@@ -39,6 +39,9 @@ const ACTIONS = {
   sendMessage: { toggle: 'sendMessages', risk: 'destructive' },
   closeApp: { toggle: 'openApps', risk: 'destructive' }, // may discard unsaved work
   purchase: { toggle: 'mouseKeyboard', risk: 'destructive' },
+  // Creating a repeating task is a standing rule: it always needs the user's OK, at every level.
+  scheduleTask: { toggle: null, risk: 'standing' },
+  manageTasks: { toggle: null, risk: 'observe' }, // list / cancel
 };
 
 function decide(action, { level = 'guarded', perms = DEFAULT_PERMS, destructive = false } = {}) {
@@ -46,7 +49,8 @@ function decide(action, { level = 'guarded', perms = DEFAULT_PERMS, destructive 
   if (!a) return { decision: 'deny', reason: `Unknown action "${action}"` };
   if (!LEVELS.includes(level)) level = 'guarded';
   if (level === 'lockdown') return { decision: 'deny', reason: 'Security level is Lockdown (chat only)' };
-  if (!perms || perms[a.toggle] !== true) return { decision: 'deny', reason: `"${label(a.toggle)}" is switched off in Settings` };
+  if (a.toggle && (!perms || perms[a.toggle] !== true)) return { decision: 'deny', reason: `"${label(a.toggle)}" is switched off in Settings` };
+  if (a.risk === 'standing') return { decision: 'ask', reason: 'Repeating tasks always need your OK' };
   // A routine action becomes destructive when what it targets is (e.g. clicking "Delete" or "Send").
   const risk = destructive ? 'destructive' : a.risk;
   if (level === 'full') return { decision: 'allow', reason: 'Full Access' };

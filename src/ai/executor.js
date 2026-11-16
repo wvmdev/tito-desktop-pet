@@ -24,8 +24,9 @@ const SENSITIVE = [
 ];
 
 class Executor {
-  constructor({ backend, roots = [os.homedir()] }) {
+  constructor({ backend, roots = [os.homedir()], tasks = null }) {
     this.backend = backend;
+    this.tasks = tasks; // TaskScheduler, for the schedule_task / list_tasks / cancel_task tools
     this.roots = roots.map(r => fs.realpathSync(r));
     this.shot = null; // geometry of the latest screenshot, for mapping click coordinates
   }
@@ -137,6 +138,21 @@ class Executor {
           if (this.roots.includes(p)) throw new Error('Tito will not delete the home folder.');
           await this.backend.trash(p);
           return { text: `Moved ${path.basename(p)} to the Trash.` };
+        }
+        case 'schedule_task': {
+          if (!this.tasks) throw new Error('Scheduling is not available.');
+          const t = this.tasks.add({ kind: input.kind, value: input.value, everySec: input.every_seconds });
+          return { text: `Scheduled (id ${t.id}). It repeats until removed in Settings or with cancel_task.` };
+        }
+        case 'list_tasks': {
+          if (!this.tasks) throw new Error('Scheduling is not available.');
+          const all = this.tasks.list();
+          return { text: clean(all.length ? all.map(t => `${t.id}: ${t.summary}${t.enabled ? '' : ' (off)'}`).join('\n') : 'No scheduled tasks.') };
+        }
+        case 'cancel_task': {
+          if (!this.tasks) throw new Error('Scheduling is not available.');
+          if (!this.tasks.remove(String(input.id))) throw new Error('No task with that id.');
+          return { text: 'Removed.' };
         }
         default:
           throw new Error(`Unknown tool "${name}".`);

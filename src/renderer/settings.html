@@ -129,6 +129,17 @@
     .toggle-row + .toggle-row { border-top: 1px solid var(--glass-divider); }
     .toggle-row .t { flex: 1; font-weight: 600; }
     .toggles.off { opacity: .55; }
+    .task { display: flex; align-items: center; gap: 10px; padding: 8px 0; }
+    .task + .task { border-top: 1px solid var(--glass-divider); }
+    .task .t { flex: 1; min-width: 0; }
+    .task .sum { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .task .last { color: var(--ink-muted); font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .task .last.bad { color: #c4572e; }
+    .x { border: 0; background: transparent; color: var(--ink-muted); font-size: 16px; cursor: pointer; border-radius: 6px; padding: 2px 6px; }
+    .x:hover { background: var(--glass-press); color: var(--ink); }
+    .addtask input[type=number] { width: 64px; font: inherit; color: var(--ink); background: var(--glass-hover);
+      border: 1px solid var(--glass-divider); border-radius: 9px; padding: 5px 8px; outline: none; }
+    .notasks { color: var(--ink-muted); font-size: 12px; padding: 4px 0; }
     .soon { color: var(--ink-muted); font-size: 12px; padding: 12px 16px; border-radius: 16px; }
     .soon > * { position: relative; z-index: 1; }
   </style>
@@ -247,6 +258,31 @@
         <span class="result" id="testResult" aria-live="polite"></span>
       </div>
       <div class="note">Keys are encrypted with your Mac's Keychain and are only ever sent to the provider you pick. Tito never shows them again or writes them to logs.</div>
+    </div>
+
+    <h2>Scheduled tasks</h2>
+    <div class="panel glass">
+      <div id="taskList"></div>
+      <div class="line addtask">
+        <select id="taskKind" aria-label="Action">
+          <option value="key">Press key</option>
+          <option value="type">Type text</option>
+          <option value="open">Open app</option>
+        </select>
+        <input type="text" id="taskValue" placeholder="space" aria-label="Key, text or app" autocomplete="off" spellcheck="false">
+      </div>
+      <div class="line addtask">
+        <span>every</span>
+        <input type="number" id="taskEvery" value="6" min="1" aria-label="Interval">
+        <select id="taskUnit" aria-label="Unit">
+          <option value="1">seconds</option>
+          <option value="60" selected>minutes</option>
+          <option value="3600">hours</option>
+        </select>
+        <button class="btn primary" id="taskAdd" type="button">Add task</button>
+        <span class="result bad" id="taskErr" aria-live="polite"></span>
+      </div>
+      <div class="note">Tasks repeat until you remove them, and act on whichever app is in front. You can also ask Tito in chat, e.g. "press space every 6 minutes". Pause them all from the menu-bar cat. They are skipped in Lockdown.</div>
     </div>
 
     <h2>Computer control</h2>

@@ -7,7 +7,7 @@ const ICON = {
 if (window.tito.platform !== 'darwin') document.body.classList.add('no-vibrancy');
 
 async function init() {
-  const { personalities, settings, sizeRange, stayPoses, mood, ai, security } = await api.get();
+  const { personalities, settings, sizeRange, stayPoses, mood, ai, security, tasks } = await api.get();
 
   const grid = document.getElementById('personalities');
   for (const p of personalities) {
@@ -178,6 +178,46 @@ async function init() {
     setResult(r.ok ? 'ok' : 'bad', r.ok ? `Connected to ${r.model} (${(r.ms / 1000).toFixed(1)}s): "${r.text}"` : r.error.message);
   });
   renderProvider();
+
+  // ---- scheduled tasks ----
+  const tasksApi = window.tito.tasks;
+  const ago = at => { const s = Math.round((Date.now() - at) / 1000); return s < 60 ? `${s}s ago` : s < 3600 ? `${Math.round(s / 60)} min ago` : `${Math.round(s / 3600)} h ago`; };
+  const renderTasks = list => {
+    const box = $('taskList');
+    if (!list.length) { box.replaceChildren(Object.assign(document.createElement('div'), { className: 'notasks', textContent: 'No tasks yet.' })); return; }
+    box.replaceChildren(...list.map(t => {
+      const row = document.createElement('div');
+      row.className = 'task';
+      const text = document.createElement('div');
+      text.className = 't';
+      const last = Object.assign(document.createElement('div'), { className: `last${t.last && !t.last.ok ? ' bad' : ''}`,
+        textContent: t.last ? `${ago(t.last.at)}: ${t.last.text}` : (t.enabled ? 'Waiting for its first run' : 'Off') });
+      text.append(Object.assign(document.createElement('div'), { className: 'sum', textContent: t.summary }), last);
+      const sw = document.createElement('span');
+      sw.className = 'switch';
+      const cb = Object.assign(document.createElement('input'), { type: 'checkbox', checked: t.enabled });
+      cb.setAttribute('role', 'switch');
+      cb.setAttribute('aria-label', `${t.summary}: on`);
+      cb.addEventListener('change', () => tasksApi.toggle(t.id, cb.checked));
+      sw.append(cb, Object.assign(document.createElement('span'), { className: 'track' }), Object.assign(document.createElement('span'), { className: 'knob' }));
+      const del = Object.assign(document.createElement('button'), { className: 'x', textContent: '×', title: 'Remove task' });
+      del.setAttribute('aria-label', `Remove: ${t.summary}`);
+      del.addEventListener('click', () => tasksApi.remove(t.id));
+      row.append(text, sw, del);
+      return row;
+    }));
+  };
+  renderTasks(tasks);
+  tasksApi.onChange(renderTasks);
+  const PLACEHOLDER = { key: 'space', type: 'text to type', open: 'Safari' };
+  $('taskKind').addEventListener('change', () => { $('taskValue').placeholder = PLACEHOLDER[$('taskKind').value]; });
+  const addTask = async () => {
+    const r = await tasksApi.add({ kind: $('taskKind').value, value: $('taskValue').value, everySec: Number($('taskEvery').value) * Number($('taskUnit').value) });
+    $('taskErr').textContent = r.ok ? '' : r.error;
+    if (r.ok) $('taskValue').value = '';
+  };
+  $('taskAdd').addEventListener('click', addTask);
+  $('taskValue').addEventListener('keydown', e => { if (e.key === 'Enter') addTask(); });
 
   // ---- computer control: security level + per-action toggles ----
   const LEVEL_TEXT = {

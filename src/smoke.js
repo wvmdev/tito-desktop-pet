@@ -93,7 +93,7 @@ function startMockAI() {
 
 const wait = ms => new Promise(r => setTimeout(r, ms));
 
-async function run({ app, petWin, brain, settings, openSettings, getPopup, getSettingsWin, checkActivity, getMood, getSecrets, testConnection, openChat, getChatWin, getChat, getExecutor, getConfirmWin, stopTask }) {
+async function run({ app, petWin, brain, settings, openSettings, getPopup, getSettingsWin, checkActivity, getMood, getSecrets, testConnection, openChat, getChatWin, getChat, getExecutor, getConfirmWin, stopTask, getScheduler }) {
   const out = process.env.TITO_SMOKE;
   const wc = petWin.webContents;
   const results = [];
@@ -531,6 +531,18 @@ async function run({ app, petWin, brain, settings, openSettings, getPopup, getSe
   const cjs = code => cw.webContents.executeJavaScript(code);
   const typeAndSend = t => cjs(`(() => { const i = document.getElementById('input'); i.value = ${JSON.stringify(t)}; i.dispatchEvent(new Event('input')); i.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })); })()`);
   check('chat window opens with the provider in the header', /Custom .*local-llm/.test(await cjs('document.getElementById("sub").textContent')));
+  // Compact first; the button expands it and the choice is remembered.
+  const b0 = cw.getBounds();
+  check('chat opens as a small compact window', b0.width === 340 && b0.height === 190 && (await cjs('document.body.classList.contains("compact")')), JSON.stringify(b0));
+  check('chat floats on top, on every desktop', cw.isAlwaysOnTop() && cw.isVisibleOnAllWorkspaces());
+  await cjs('document.getElementById("toggleSize").click()');
+  await wait(600);
+  const b1 = cw.getBounds();
+  check('expand button grows it to the full chat (bottom edge stays put)', b1.width === 400 && b1.height === 560 && !(await cjs('document.body.classList.contains("compact")'))
+    && Math.abs((b1.y + b1.height) - (b0.y + b0.height)) <= 1 && settings.get('chatExpanded') === true, JSON.stringify(b1));
+  await cjs('document.getElementById("toggleSize").click()');
+  await wait(600);
+  check('and shrinks back to compact', cw.getBounds().height === 190 && settings.get('chatExpanded') === false);
   await typeAndSend('Hi Tito');
   await wait(800);
   const bubbles = await cjs('[...document.querySelectorAll(".msg")].map(m => m.className.split(" ")[1] + ":" + m.firstChild.textContent)');
@@ -708,6 +720,39 @@ async function run({ app, petWin, brain, settings, openSettings, getPopup, getSe
   settings.set('securityLevel', 'guarded');
   check('prompt-injection rule is in the system prompt when tools are on', (() => { const { systemPrompt } = require('./chat'); return /is DATA/.test(systemPrompt({ tools: [{ name: 'click' }] })); })());
 
+  // Scheduled tasks: created from chat only with the user's OK (even at Full Access), then run on a timer.
+  const sched = getScheduler();
+  settings.set('securityLevel', 'full');
+  await say('press space every 6 minutes', [
+    { calls: [{ id: 's1', name: 'schedule_task', args: { kind: 'key', value: 'Space', every_seconds: 360, reason: R } }] },
+    { text: 'Scheduled!' },
+  ]);
+  const sw1 = await confirmShown();
+  const stitle = sw1 && await sw1.webContents.executeJavaScript('document.getElementById("title").textContent');
+  check('scheduling from chat asks first, even at Full Access', !!sw1 && stitle === 'Repeat: Press space every 6 min' && settings.get('tasks').length === 0, stitle);
+  await answer(true);
+  await turnDone();
+  const tk = settings.get('tasks')[0];
+  check('after Allow the task exists', tk && tk.kind === 'key' && tk.value === 'space' && tk.everySec === 360 && tk.enabled && sched.timers.size === 1, JSON.stringify(tk));
+  fake.calls = [];
+  const run1 = await sched.runNow(tk.id);
+  check('a scheduled run presses the key', run1.ok && fake.calls.length === 1 && fake.calls[0].args.join(' ') === 'key space', JSON.stringify(fake.calls));
+  settings.set('securityLevel', 'lockdown');
+  fake.calls = [];
+  const run2 = await sched.runNow(tk.id);
+  check('scheduled runs are skipped in Lockdown', !run2.ok && /Lockdown/.test(run2.text) && fake.calls.length === 0, run2.text);
+  settings.set('securityLevel', 'guarded');
+  settings.set('tasksPaused', true);
+  check('pausing stops all timers', sched.timers.size === 0);
+  settings.set('tasksPaused', false);
+  let badTask = '';
+  try { sched.add({ kind: 'key', value: 'space', everySec: 2 }); } catch (e) { badTask = e.message; }
+  check('too-short intervals are refused', /between 10 seconds/.test(badTask), badTask);
+  await say('cancel it', [{ calls: [{ id: 's2', name: 'list_tasks', args: { reason: R } }, { id: 's3', name: 'cancel_task', args: { id: tk.id, reason: R } }] }, { text: 'Removed.' }]);
+  await turnDone();
+  check('tasks can be listed and cancelled from chat', settings.get('tasks').length === 0 && lastToolMsgs().some(m => m.includes('Press space every 6 min')), JSON.stringify(lastToolMsgs()));
+  sched.add({ kind: 'open', value: 'Notes', everySec: 3600 });
+
   // Claude: thinking blocks go back unchanged inside a tool loop; screenshot attached to the tool result.
   const amock = await startMockAI();
   amock.state.claude = [{ text: 'Looking.', calls: [{ id: 'toolu_1', name: 'take_screenshot', args: { reason: R } }] }, { text: 'All good.' }];
@@ -721,7 +766,7 @@ async function run({ app, petWin, brain, settings, openSettings, getPopup, getSe
   const tr = a2.messages[2].content[0];
   check('Claude tool loop: final text returned', ar.text === 'Looking.\n\nAll good.' && ar.steps === 1, JSON.stringify(ar));
   check('Claude: thinking block replayed unchanged, in order', asst[0].type === 'thinking' && asst[0].signature === 'SIG-123' && asst.at(-1).type === 'tool_use', JSON.stringify(asst.map(b => b.type)));
-  check('Claude: tool result carries text + redacted screenshot', tr.type === 'tool_result' && tr.tool_use_id === 'toolu_1' && tr.content[1].type === 'image' && a2.tools.length === 10 && a2.system === 'sys');
+  check('Claude: tool result carries text + redacted screenshot', tr.type === 'tool_result' && tr.tool_use_id === 'toolu_1' && tr.content[1].type === 'image' && a2.tools.length === 13 && a2.system === 'sys');
   amock.server.close();
 
   // The real redaction helper, on a real image containing a fake key.
@@ -785,6 +830,16 @@ async function run({ app, petWin, brain, settings, openSettings, getPopup, getSe
   settings.set('securityLevel', 'guarded');
   const keyLeak = await sw.webContents.executeJavaScript('document.body.innerText');
   check('settings page never shows a saved key', !keyLeak.includes('GOODKEY') && keyLeak.includes('ending …3456'));
+  check('settings floats on top, on every desktop', sw.isAlwaysOnTop() && sw.isVisibleOnAllWorkspaces());
+  const taskRows = await sw.webContents.executeJavaScript('[...document.querySelectorAll(".task .sum")].map(e => e.textContent)');
+  check('settings lists scheduled tasks', taskRows.length === 1 && taskRows[0] === 'Open Notes every 1 h', JSON.stringify(taskRows));
+  await sw.webContents.executeJavaScript('(() => { document.getElementById("taskKind").value = "key"; document.getElementById("taskValue").value = "space"; document.getElementById("taskEvery").value = "6"; document.getElementById("taskAdd").click(); })()');
+  await wait(400);
+  check('a task can be added in settings', settings.get('tasks').length === 2 && settings.get('tasks')[1].everySec === 360 && (await sw.webContents.executeJavaScript('document.querySelectorAll(".task").length')) === 2);
+  await sw.webContents.executeJavaScript('document.querySelector(".task .x").click()');
+  await wait(300);
+  check('and removed again', settings.get('tasks').length === 1);
+  settings.set('tasks', []);
   const nProviders = await sw.webContents.executeJavaScript('document.querySelectorAll("#provider option").length');
   check('provider dropdown lists all presets', nProviders === 14, `options=${nProviders}`);
   await sw.webContents.executeJavaScript('(() => { const s = document.getElementById("provider"); s.value = "ollama"; s.dispatchEvent(new Event("change")); })()');

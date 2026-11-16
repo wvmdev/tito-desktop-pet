@@ -116,6 +116,22 @@ function setBusy(b) {
   sendBtn.disabled = !b && !input.value.trim();
 }
 
+// ---------- compact / expanded ----------
+const toggleBtn = document.getElementById('toggleSize');
+const ICON_EXPAND = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 4h6v6M10 20H4v-6M20 4l-7 7M4 20l7-7"/></svg>';
+const ICON_COLLAPSE = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 10h-6V4M4 14h6v6M14 10l7-7M10 14l-7 7"/></svg>';
+let expanded = false;
+function setExpanded(on) {
+  expanded = !!on;
+  document.body.classList.toggle('compact', !expanded);
+  toggleBtn.innerHTML = expanded ? ICON_COLLAPSE : ICON_EXPAND;
+  toggleBtn.title = expanded ? 'Make smaller' : 'Expand';
+  toggleBtn.setAttribute('aria-label', expanded ? 'Make chat smaller' : 'Expand chat');
+  requestAnimationFrame(() => { log.scrollTop = log.scrollHeight; });
+}
+toggleBtn.addEventListener('click', () => api.setExpanded(!expanded));
+api.onExpanded(setExpanded);
+
 let lastSent = '';
 function send(text) {
   const t = (text ?? input.value).trim();
@@ -174,7 +190,8 @@ document.getElementById('newChat').addEventListener('click', async () => {
 });
 
 (async () => {
-  const { history, status } = await api.get();
+  const { history, status, expanded: startExpanded } = await api.get();
+  setExpanded(startExpanded);
   document.getElementById('sub').textContent = status;
   if (!history.length) emptyState();
   for (const m of history) {

@@ -36,11 +36,19 @@ contextBridge.exposeInMainWorld('tito', {
     onAction: cb => ipcRenderer.on('chat:action', (_e, a) => cb(a)),
     onIdle: cb => ipcRenderer.on('chat:idle', () => cb()),
     onStatus: cb => ipcRenderer.on('chat:status', (_e, s) => cb(s)),
+    setExpanded: on => ipcRenderer.send('chat:set-expanded', !!on),
+    onExpanded: cb => ipcRenderer.on('chat:expanded', (_e, on) => cb(on)),
   },
   size: {
     get: () => ipcRenderer.invoke('size:get'),
     set: value => ipcRenderer.send('size:set', value),
     close: () => ipcRenderer.send('size:close'),
+  },
+  tasks: {
+    add: task => ipcRenderer.invoke('tasks:add', task),
+    remove: id => ipcRenderer.invoke('tasks:remove', id),
+    toggle: (id, on) => ipcRenderer.invoke('tasks:toggle', id, !!on),
+    onChange: cb => ipcRenderer.on('settings:tasks', (_e, list) => cb(list)),
   },
   confirm: {
     onShow: cb => ipcRenderer.on('confirm:show', (_e, r) => cb(r)),

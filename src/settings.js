@@ -7,6 +7,7 @@ const EventEmitter = require('events');
 const { PERSONALITIES, DEFAULT_PERSONALITY, STAY_POSES } = require('./personalities');
 const { LEVELS, DEFAULT_PERMS, validatePerms } = require('./ai/permissions');
 const { DEFAULT_MODELS, PROVIDER_IDS } = require('./ai/providers');
+const { validateTasks } = require('./tasks');
 
 const MODEL_RE = /^[A-Za-z0-9._:\/@-]{1,120}$/;
 // Custom endpoints: https anywhere, plain http only for this machine (local model servers).
@@ -35,6 +36,9 @@ const DEFAULTS = {
   customBaseURL: '',
   securityLevel: 'guarded',
   actionPerms: DEFAULT_PERMS,
+  tasks: [],              // scheduled tasks, see tasks.js
+  tasksPaused: false,
+  chatExpanded: false,    // chat opens compact; the user can expand it
 };
 
 const VALIDATORS = {
@@ -60,6 +64,9 @@ const VALIDATORS = {
   customBaseURL: v => (typeof v === 'string' ? validBaseURL(v.trim()) : null),
   securityLevel: v => (LEVELS.includes(v) ? v : null),
   actionPerms: v => validatePerms(v),
+  tasks: v => validateTasks(v),
+  tasksPaused: v => (typeof v === 'boolean' ? v : null),
+  chatExpanded: v => (typeof v === 'boolean' ? v : null),
   locationOverride: v => (typeof v === 'string' ? v.replace(/[\u0000-\u001f]/g, '').trim().slice(0, 80) : null),
 };
 

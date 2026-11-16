@@ -13,6 +13,7 @@
 //     frozen (required for Claude's thinking blocks to stay valid).
 const { decide } = require('./permissions');
 const { classify, validate } = require('./tools');
+const { cleanTask, describeTask } = require('../tasks');
 
 const MAX_STEPS = 25;
 const ORDER = { allow: 0, ask: 1, deny: 2 };
@@ -32,6 +33,13 @@ function describe(name, input = {}) {
     case 'list_folder': return { title: 'List a folder', detail: short(String(input.path), 200) };
     case 'write_file': return { title: 'Write a file', detail: `${short(String(input.path), 200)} (${String(input.content).length} characters)` };
     case 'delete_file': return { title: 'Move to the Trash', detail: short(String(input.path), 200) };
+    case 'schedule_task': {
+      let summary = 'Repeat a task';
+      try { summary = `Repeat: ${describeTask(cleanTask({ kind: input.kind, value: input.value, everySec: input.every_seconds }))}`; } catch { /* shown as invalid when run */ }
+      return { title: short(summary, 70), detail: 'Runs until you remove it in Settings.' };
+    }
+    case 'list_tasks': return { title: 'Check scheduled tasks' };
+    case 'cancel_task': return { title: 'Remove a scheduled task', detail: short(String(input.id), 40) };
     default: return { title: short(String(name), 60) };
   }
 }

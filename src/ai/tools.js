@@ -57,6 +57,20 @@ const TOOLS = [
     description: 'Move a file or folder inside the user\'s home folder to the Trash.',
     schema: { type: 'object', properties: { path: { type: 'string' }, reason },
       required: ['path', 'reason'], additionalProperties: false } },
+  { name: 'schedule_task', toggle: null,
+    description: 'Create a repeating task that Tito runs on a timer until the user removes it, e.g. press a key every few minutes. The user must approve it.',
+    schema: { type: 'object', properties: {
+      kind: { type: 'string', enum: ['key', 'type', 'open'], description: '"key" = press a key or shortcut, "type" = type text, "open" = open an app' },
+      value: { type: 'string', description: 'The key (e.g. "space"), the text, or the app name.' },
+      every_seconds: { type: 'integer', description: 'Interval in seconds (10 to 86400).' },
+      reason,
+    }, required: ['kind', 'value', 'every_seconds', 'reason'], additionalProperties: false } },
+  { name: 'list_tasks', toggle: null,
+    description: "List the user's repeating tasks with their ids.",
+    schema: { type: 'object', properties: { reason }, required: ['reason'], additionalProperties: false } },
+  { name: 'cancel_task', toggle: null,
+    description: 'Remove a repeating task by id (see list_tasks).',
+    schema: { type: 'object', properties: { id: { type: 'string' }, reason }, required: ['id', 'reason'], additionalProperties: false } },
 ];
 const BY_NAME = Object.fromEntries(TOOLS.map(t => [t.name, t]));
 
@@ -72,6 +86,11 @@ function classify(name, input = {}) {
     case 'delete_file': return [{ action: 'fileDelete' }];
     case 'open_app': return [{ action: 'openApp' }];
     case 'scroll': return [{ action: 'scroll' }];
+    case 'schedule_task': {
+      const under = { key: 'key', type: 'type', open: 'openApp' }[input.kind];
+      return [{ action: 'scheduleTask' }, ...(under ? [{ action: under }] : [])];
+    }
+    case 'list_tasks': case 'cancel_task': return [{ action: 'manageTasks' }];
     case 'click': case 'type_text': case 'press_key': {
       const base = name === 'click' ? 'click' : name === 'type_text' ? 'type' : 'key';
       const keys = String(input.keys || '').toLowerCase().replace(/\s+/g, '');
@@ -108,11 +127,11 @@ function validate(name, input) {
 // Tools available under the current settings (Lockdown -> none; switched-off categories omitted).
 function availableTools(level, perms) {
   if (level === 'lockdown') return [];
-  return TOOLS.filter(t => perms && perms[t.toggle] === true);
+  return TOOLS.filter(t => t.toggle === null || (perms && perms[t.toggle] === true));
 }
 
 // Sanity: every classified action exists in the policy table.
-for (const t of TOOLS) for (const c of classify(t.name, { effect: 'purchase' }) || []) {
+for (const t of TOOLS) for (const c of classify(t.name, { effect: 'purchase', kind: 'key' }) || []) {
   if (!ACTIONS[c.action]) throw new Error(`tools.js: unknown policy action ${c.action}`);
 }
 

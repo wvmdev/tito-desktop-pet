@@ -17,6 +17,7 @@ const { ChatSession } = require('./chat');
 const { availableTools } = require('./ai/tools');
 const { Executor } = require('./ai/executor');
 const { createMacBackend } = require('./ai/mac-backend');
+const { TaskScheduler } = require('./tasks');
 
 const ROOT = path.join(__dirname, '..');
 // Base window box at size 1. Sprites are normalised so Tito looks the same size in every
@@ -62,6 +63,7 @@ let chatWin = null;
 let executor = null;
 let confirmWin = null;
 let pendingConfirm = null; // { id, resolve }
+let scheduler = null;
 
 const pageURL = name => `tito://app/src/renderer/${name}`;
 const petDims = size => ({ W: Math.round(BASE_W * size), H: Math.round(BASE_H * size) });
@@ -328,7 +330,7 @@ function registerIpc() {
   const fromChat = e => chatWin && e.sender === chatWin.webContents;
   ipcMain.handle('chat:get', e => {
     if (!fromChat(e)) throw new Error('denied');
-    return { history: chat.history(), status: chatStatus() };
+    return { history: chat.history(), status: chatStatus(), expanded: settings.get('chatExpanded') };
   });
   ipcMain.on('chat:send', (e, text) => { if (fromChat(e) && typeof text === 'string') chat.send(text); });
   ipcMain.on('chat:stop', e => { if (fromChat(e)) stopTask(); });
@@ -339,6 +341,7 @@ function registerIpc() {
   });
   ipcMain.handle('chat:clear', e => { if (!fromChat(e)) throw new Error('denied'); chat.clear(); });
   ipcMain.on('chat:open-settings', e => { if (fromChat(e)) openSettings(); });
+  ipcMain.on('chat:set-expanded', (e, on) => { if (fromChat(e)) { settings.set('chatExpanded', !!on); resizeChat(); } });
 
   const fromSize = fromPopup('size');
   ipcMain.handle('size:get', e => {
@@ -352,7 +355,7 @@ function registerIpc() {
     if (!fromSettings(e)) throw new Error('denied');
     return {
       settings: settings.all(), personalities: personalityList(), sizeRange: [SIZE_MIN, SIZE_MAX],
-      stayPoses: STAY_POSES, mood: mood && mood.summary(), ai: aiStatus(),
+      stayPoses: STAY_POSES, mood: mood && mood.summary(), ai: aiStatus(), tasks: scheduler.list(),
       security: { levels: LEVELS, toggles: PERM_TOGGLES },
     };
   });
@@ -375,6 +378,17 @@ function registerIpc() {
     }
     settings.set(key, value);
     return settings.all();
+  });
+
+  // ---- scheduled tasks (created here by the user's own clicks) ----
+  ipcMain.handle('tasks:add', (e, task) => {
+    if (!fromSettings(e)) throw new Error('denied');
+    try { scheduler.add(task); return { ok: true }; } catch (err) { return { ok: false, error: err.message }; }
+  });
+  ipcMain.handle('tasks:remove', (e, id) => { if (!fromSettings(e)) throw new Error('denied'); scheduler.remove(String(id)); });
+  ipcMain.handle('tasks:toggle', (e, id, on) => {
+    if (!fromSettings(e)) throw new Error('denied');
+    settings.set('tasks', settings.get('tasks').map(t => (t.id === id ? { ...t, enabled: !!on } : t)));
   });
 
   // ---- AI provider: keys and connection test (keys never travel back to the renderer) ----
@@ -462,6 +476,16 @@ function startChat() {
     finally { if (esc && chat && chat.busy) setTimeout(() => { if (chat.busy) registerStopKey(); }, 250); }
   };
   executor = new Executor({ backend });
+  scheduler = new TaskScheduler({
+    settings,
+    getExecutor: () => executor,
+    getSecrets: () => Object.keys(PROVIDERS).map(id => secrets.get(id)).filter(Boolean),
+  });
+  executor.tasks = scheduler;
+  const pushTasks = () => { if (settingsWin && !settingsWin.isDestroyed()) settingsWin.webContents.send('settings:tasks', scheduler.list()); };
+  scheduler.on('ran', pushTasks);
+  settings.on('change', key => { if (key === 'tasks' || key === 'tasksPaused') { scheduler.sync(); pushTasks(); refreshTrayMenu(); } });
+  if (!process.env.TITO_SMOKE) scheduler.sync();
 
   chat = new ChatSession({
     getProvider: () => currentProvider(),
@@ -539,9 +563,31 @@ function resolveConfirm(answer, id) {
   p.resolve(answer === 'allow' ? 'allow' : 'deny');
 }
 
+const CHAT_SIZES = { compact: { W: 340, H: 190 }, expanded: { W: 400, H: 560 } };
+const chatSize = () => CHAT_SIZES[settings.get('chatExpanded') ? 'expanded' : 'compact'];
+
+// Float above other apps, on every desktop (Space) and over full-screen apps.
+function floatEverywhere(win) {
+  win.setAlwaysOnTop(true, 'floating');
+  win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+}
+
+// Switch between the compact bar and the full window, keeping the bottom-left corner in place.
+function resizeChat() {
+  if (!chatWin || chatWin.isDestroyed()) return;
+  const { W, H } = chatSize();
+  const b = chatWin.getBounds();
+  const a = screen.getDisplayMatching(b).workArea;
+  const x = Math.min(a.x + a.width - W, Math.max(a.x, b.x));
+  const y = Math.min(a.y + a.height - H, Math.max(a.y, b.y + b.height - H));
+  chatWin.setMinimumSize(280, settings.get('chatExpanded') ? 360 : 150);
+  chatWin.setBounds({ x, y, width: W, height: H }, true);
+  chatWin.webContents.send('chat:expanded', settings.get('chatExpanded'));
+}
+
 function openChat() {
   if (chatWin) { chatWin.show(); chatWin.focus(); return; }
-  const W = 400, H = 560;
+  const { W, H } = chatSize();
   const a = screen.getDisplayNearestPoint({ x: Math.round(brain.footX()), y: Math.round(brain.footY()) }).workArea;
   // Beside Tito, on whichever side has room.
   let x = Math.round(brain.footX() + 90 * settings.get('size'));
@@ -549,7 +595,7 @@ function openChat() {
   x = Math.min(a.x + a.width - W, Math.max(a.x, x));
   const y = Math.max(a.y, Math.round(a.y + a.height - H - 20));
   chatWin = new BrowserWindow({
-    width: W, height: H, x, y, minWidth: 320, minHeight: 360,
+    width: W, height: H, x, y, minWidth: 280, minHeight: settings.get('chatExpanded') ? 360 : 150,
     title: 'Chat with Tito', show: false, alwaysOnTop: true,
     ...(isMac ? {
       vibrancy: 'under-window', visualEffectState: 'active',
@@ -557,7 +603,7 @@ function openChat() {
     } : {}),
     webPreferences: secureWebPrefs(),
   });
-  chatWin.setAlwaysOnTop(true, 'floating'); // above apps, below Tito
+  floatEverywhere(chatWin); // above apps on every desktop, below Tito
   chatWin.loadURL(pageURL('chat.html'));
   chatWin.once('ready-to-show', () => { app.focus({ steal: true }); chatWin.show(); chatWin.focus(); });
   chatWin.on('closed', () => { chatWin = null; });
@@ -568,13 +614,14 @@ function openSettings() {
   if (settingsWin) { settingsWin.show(); settingsWin.focus(); return; }
   settingsWin = new BrowserWindow({
     width: 500, height: 640, minWidth: 440, minHeight: 460,
-    title: 'Tito Settings', show: false,
+    title: 'Tito Settings', show: false, alwaysOnTop: true,
     ...(isMac ? {
       vibrancy: 'under-window', visualEffectState: 'active',
       titleBarStyle: 'hiddenInset', transparent: true, backgroundColor: '#00000000',
     } : {}),
     webPreferences: secureWebPrefs(),
   });
+  floatEverywhere(settingsWin);
   settingsWin.loadURL(pageURL('settings.html'));
   settingsWin.once('ready-to-show', () => { app.focus({ steal: true }); settingsWin.show(); settingsWin.focus(); });
   settingsWin.on('closed', () => { settingsWin = null; });
@@ -597,6 +644,8 @@ function refreshTrayMenu() {
     { label: 'Chat…', click: openChat },
     { label: 'Settings…', click: openSettings },
     { label: 'Size…', click: () => openPopup('size') },
+    ...(settings.get('tasks').length ? [{ label: `Pause scheduled tasks (${settings.get('tasks').length})`, type: 'checkbox',
+      checked: settings.get('tasksPaused'), click: item => settings.set('tasksPaused', item.checked) }] : []),
     { label: `Stay still (${pose ? pose.label.toLowerCase() : 'sitting'})`, type: 'checkbox',
       checked: settings.get('stayStill'), click: item => settings.set('stayStill', item.checked) },
     { type: 'separator' },
@@ -635,7 +684,7 @@ app.whenReady().then(() => {
     require('./smoke').run({
       app, petWin, brain, settings, openSettings, openPopup, checkActivity, getMood: () => mood,
       getSecrets: () => secrets, testConnection, openChat, getChatWin: () => chatWin, getChat: () => chat,
-      getExecutor: () => executor, getConfirmWin: () => confirmWin, stopTask,
+      getExecutor: () => executor, getConfirmWin: () => confirmWin, stopTask, getScheduler: () => scheduler,
       getPopup: () => ({ win: popupWin, kind: popupKind }), getSettingsWin: () => settingsWin,
     }).catch(e => { console.log('SMOKE ERROR', e && e.stack); app.exit(3); });
   }
@@ -656,5 +705,5 @@ app.whenReady().then(() => {
   }
 });
 
-app.on('will-quit', () => { globalShortcut.unregisterAll(); if (windowFeed) windowFeed.kill(); if (settings) settings.flush(); });
+app.on('will-quit', () => { globalShortcut.unregisterAll(); if (scheduler) scheduler.stop(); if (windowFeed) windowFeed.kill(); if (settings) settings.flush(); });
 app.on('window-all-closed', () => app.quit());
