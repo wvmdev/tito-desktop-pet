@@ -5,7 +5,7 @@
 // of an app window (from bin/tito-windows). Windows arrive front-to-back; a window's top edge is
 // only standable where no window in front of it covers that point.
 //
-// Modes: walk | run | hop | stalk | climb | teleport | idle | react | menu | held | fall | land
+// Modes: walk | run | hop | stalk | climb | teleport | idle | react | menu | held | fall | land | sleep | wake
 const { screen } = require('electron');
 const EventEmitter = require('events');
 const { PERSONALITIES, DEFAULT_PERSONALITY } = require('./personalities');
@@ -54,6 +54,7 @@ class Brain extends EventEmitter {
     this.mode = 'init';
     this.facing = 'left';
     this.stayPose = null; // set = "Stay still" mode: loop this pose, no wandering
+    this.mood = null;     // from mood-rules.computeMood: { bias, extras, energy, ... }
     this.x = 0;
     this.y = 0;
     this.surface = { kind: 'ground' }; // or { kind: 'window', id, lastX }
@@ -198,7 +199,10 @@ class Brain extends EventEmitter {
   next() {
     if (this.stayPose) return this.idle({ forever: true });
     if (this.mode !== 'idle') return this.idle(); // after any move, settle into an idle
-    if (Math.random() < this.p.idleChain) return this.idle();
+    // Low-energy moods idle more and move less.
+    const energy = this.mood ? this.mood.energy : 1;
+    const chain = Math.min(0.9, Math.max(0, this.p.idleChain + (1 - energy) * 0.5));
+    if (Math.random() < chain) return this.idle();
     const moves = Object.entries(this.p.moves).filter(([k, w]) => w > 0 && this._canDo(k));
     if (!moves.length) return this.idle();
     return this[pickWeighted(moves)]();
@@ -469,13 +473,50 @@ class Brain extends EventEmitter {
     this._clear();
     this.y = this.standY();
     this._commit();
-    const name = forever ? (this.stayPose || 'sentado') : pickWeighted(this.p.idle);
+    const name = forever ? (this.stayPose || 'sentado') : pickWeighted(this._idlePool());
     const [lo, hi] = this.p.idleLoops;
     const loops = Math.max(1, Math.round(rand(lo, hi)));
     const speed = this.p.animSpeed;
     this._setMode('idle', { name, loops });
     this._anim(name, speed);
     if (!forever) this._after((loops * LOOP_MS) / speed, () => this.next());
+  }
+
+  // Personality idle weights, re-weighted by the current mood. The mood's own animations are
+  // mixed in at a low weight even if the personality doesn't normally use them.
+  _idlePool() {
+    const pool = new Map(this.p.idle);
+    if (this.mood) {
+      for (const a of this.mood.extras || []) if (!pool.has(a)) pool.set(a, 0.6);
+      for (const [a, w] of pool) pool.set(a, w * (this.mood.bias[a] || 1));
+    }
+    return [...pool].filter(([, w]) => w > 0);
+  }
+
+  setMood(state) { this.mood = state; }
+
+  // ---------- sleep (no user activity) ----------
+  sleep() {
+    if (!['idle', 'walk', 'run', 'hop', 'stalk', 'land'].includes(this.mode)) return false;
+    this._clear();
+    this.y = this.standY();
+    this._commit();
+    this._setMode('sleep');
+    this._anim('durmiendo', 0.8);
+    return true;
+  }
+
+  // Yawn, stretch, then carry on.
+  wake() {
+    if (this.mode !== 'sleep') return;
+    this._clear();
+    this._setMode('wake');
+    const speed = 1.6;
+    this._anim('bostezando', speed);
+    this._after(LOOP_MS / speed, () => {
+      this._anim('estirandose', speed);
+      this._after(LOOP_MS / speed, () => { this.mode = 'idle'; this.next(); });
+    });
   }
 
   // "Stay still": pose id to hold, or null to wander again.

@@ -1,7 +1,7 @@
 // Tito — main process.
 // Autonomous pet with personalities that walks on the desktop floor and on app windows,
 // click -> Settings/Chat popup, double-click -> size slider, drag & drop with falling.
-const { app, BrowserWindow, screen, ipcMain, protocol, net, Tray, Menu, nativeImage } = require('electron');
+const { app, BrowserWindow, screen, ipcMain, protocol, net, Tray, Menu, nativeImage, powerMonitor } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const { spawn, execFile } = require('child_process');
@@ -9,6 +9,7 @@ const { pathToFileURL } = require('url');
 const { Brain } = require('./brain');
 const { Settings, SIZE_MIN, SIZE_MAX } = require('./settings');
 const { personalityList, STAY_POSES } = require('./personalities');
+const { Mood } = require('./mood');
 
 const ROOT = path.join(__dirname, '..');
 // Base window box at size 1. Sprites are normalised so Tito looks the same size in every
@@ -23,6 +24,11 @@ protocol.registerSchemesAsPrivileged([
   { scheme: 'tito', privileges: { standard: true, secure: true, supportFetchAPI: true } },
 ]);
 
+// Dev runs (smoke test / recorder) use a throwaway profile so they never touch real settings.
+if (process.env.TITO_SMOKE || process.env.TITO_RECORD) {
+  app.setPath('userData', path.join(require('os').tmpdir(), `tito-dev-${process.pid}`));
+}
+
 let petWin = null;
 let popupWin = null;   // the one small glass popup currently open: 'menu' or 'size'
 let popupKind = null;
@@ -31,6 +37,7 @@ let tray = null;
 let brain = null;
 let settings = null;
 let windowFeed = null;
+let mood = null;
 
 const pageURL = name => `tito://app/src/renderer/${name}`;
 const petDims = size => ({ W: Math.round(BASE_W * size), H: Math.round(BASE_H * size) });
@@ -133,6 +140,31 @@ function startCursorWatch() {
     if (inside) petWin.webContents.send('pet:hover', { x: c.x - b.x, y: c.y - b.y });
     else setIgnore(true);
   }, 25);
+}
+
+// ---------- sleep when the user is away ----------
+// Electron reports how long since the last mouse/keyboard input (no permissions needed).
+function checkActivity(idleSec = powerMonitor.getSystemIdleTime()) {
+  if (!brain) return;
+  const limit = settings.get('sleepAfterMin');
+  if (brain.mode === 'sleep') { if (idleSec < 3) brain.wake(); return; }
+  if (limit > 0 && idleSec >= limit * 60) brain.sleep();
+}
+function startActivityWatch() {
+  if (process.env.TITO_SMOKE) return; // tests call checkActivity() with fake idle times
+  setInterval(() => checkActivity(), 2000);
+  powerMonitor.on('lock-screen', () => brain && brain.sleep());
+  powerMonitor.on('unlock-screen', () => brain && brain.wake());
+}
+
+// ---------- mood (time of day, battery, weather, day of week) ----------
+function startMood() {
+  mood = new Mood(settings);
+  mood.on('change', summary => {
+    if (brain) brain.setMood(mood.state);
+    if (settingsWin && !settingsWin.isDestroyed()) settingsWin.webContents.send('settings:mood', summary);
+  });
+  if (!process.env.TITO_SMOKE) mood.start(); else mood.recompute();
 }
 
 // ---------- other apps' windows (so Tito can stand on / climb them) ----------
@@ -267,7 +299,7 @@ function registerIpc() {
 
   ipcMain.handle('settings:get', e => {
     if (!fromSettings(e)) throw new Error('denied');
-    return { settings: settings.all(), personalities: personalityList(), sizeRange: [SIZE_MIN, SIZE_MAX], stayPoses: STAY_POSES };
+    return { settings: settings.all(), personalities: personalityList(), sizeRange: [SIZE_MIN, SIZE_MAX], stayPoses: STAY_POSES, mood: mood && mood.summary() };
   });
   ipcMain.handle('settings:set', (e, key, value) => {
     if (!fromSettings(e)) throw new Error('denied');
@@ -322,22 +354,26 @@ app.whenReady().then(() => {
   settings = new Settings();
   settings.on('change', (key, value) => {
     if (key === 'personality' && brain) brain.setPersonality(value);
+    if (settingsWin && !settingsWin.isDestroyed() && key !== 'size') settingsWin.webContents.send('settings:changed', settings.all());
     if (key === 'size') applySize(value);
+    if ((key === 'weatherEnabled' || key === 'locationOverride') && mood) mood.invalidateLocation();
+    if (key === 'sleepAfterMin') checkActivity();
     if (key === 'stayStill' || key === 'stayPose') {
       if (brain) brain.setStay(settings.get('stayStill') ? settings.get('stayPose') : null);
       refreshTrayMenu();
-      if (settingsWin) settingsWin.webContents.send('settings:changed', settings.all());
     }
   });
   registerIpc();
   createPetWindow();
   createTray();
+  startMood();
+  startActivityWatch();
   ensurePopup('menu');
   ensurePopup('size');
   startWindowFeed();
   if (process.env.TITO_SMOKE) {
     require('./smoke').run({
-      app, petWin, brain, settings, openSettings, openPopup,
+      app, petWin, brain, settings, openSettings, openPopup, checkActivity, getMood: () => mood,
       getPopup: () => ({ win: popupWin, kind: popupKind }), getSettingsWin: () => settingsWin,
     });
   }

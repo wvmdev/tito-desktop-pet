@@ -7,7 +7,7 @@ const ICON = {
 if (window.tito.platform !== 'darwin') document.body.classList.add('no-vibrancy');
 
 async function init() {
-  const { personalities, settings, sizeRange, stayPoses } = await api.get();
+  const { personalities, settings, sizeRange, stayPoses, mood } = await api.get();
 
   const grid = document.getElementById('personalities');
   for (const p of personalities) {
@@ -58,6 +58,37 @@ async function init() {
   stay.addEventListener('change', () => api.set('stayStill', stay.checked));
   syncStay(settings);
   api.onChanged(syncStay); // e.g. toggled from the menu-bar icon
+
+  // ---- mood & sleep ----
+  const showMood = m => {
+    if (!m) return;
+    document.getElementById('moodEmoji').textContent = m.emoji;
+    document.getElementById('moodLabel').textContent = `Feeling ${m.label.toLowerCase()}`;
+    const ul = document.getElementById('moodReasons');
+    ul.replaceChildren(...m.reasons.map(r => Object.assign(document.createElement('li'), { textContent: r })));
+    if (m.battery) ul.append(Object.assign(document.createElement('li'), { textContent: `Battery ${m.battery.percent}%${m.battery.charging ? ' ⚡' : ''}` }));
+    document.getElementById('weatherWarn').textContent = m.weatherError || '';
+  };
+  showMood(mood);
+  api.onMood(showMood);
+
+  const sleepAfter = document.getElementById('sleepAfter');
+  sleepAfter.value = String(settings.sleepAfterMin);
+  if (!sleepAfter.value) { // a custom value not in the list
+    sleepAfter.append(Object.assign(document.createElement('option'), { value: String(settings.sleepAfterMin), textContent: `After ${settings.sleepAfterMin} min` }));
+    sleepAfter.value = String(settings.sleepAfterMin);
+  }
+  sleepAfter.addEventListener('change', () => api.set('sleepAfterMin', +sleepAfter.value));
+
+  const weather = document.getElementById('weather');
+  const city = document.getElementById('city');
+  weather.checked = settings.weatherEnabled;
+  city.value = settings.locationOverride;
+  city.disabled = !settings.weatherEnabled;
+  weather.addEventListener('change', () => { city.disabled = !weather.checked; api.set('weatherEnabled', weather.checked); });
+  const saveCity = () => { if (city.value.trim() !== settings.locationOverride) { settings.locationOverride = city.value.trim(); api.set('locationOverride', city.value); } };
+  city.addEventListener('change', saveCity);
+  city.addEventListener('keydown', e => { if (e.key === 'Enter') city.blur(); });
 
   const size = document.getElementById('size');
   const sizeVal = document.getElementById('sizeVal');

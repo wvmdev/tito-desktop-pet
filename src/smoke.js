@@ -5,10 +5,11 @@ const path = require('path');
 const { screen } = require('electron');
 const { PERSONALITIES } = require('./personalities');
 const { MOVE_ANIMS } = require('./brain');
+const { computeMood } = require('./mood-rules');
 
 const wait = ms => new Promise(r => setTimeout(r, ms));
 
-async function run({ app, petWin, brain, settings, openSettings, getPopup, getSettingsWin }) {
+async function run({ app, petWin, brain, settings, openSettings, getPopup, getSettingsWin, checkActivity, getMood }) {
   const out = process.env.TITO_SMOKE;
   const wc = petWin.webContents;
   const results = [];
@@ -267,6 +268,43 @@ async function run({ app, petWin, brain, settings, openSettings, getPopup, getSe
     check(`${move}: faces travel direction`, f === dir, `moving ${dir}, facing ${f}`);
   }
 
+  // ---- phase 4: sleep when the user is away ----
+  await settle();
+  brain.mode = 'idle'; brain.next();
+  settings.set('sleepAfterMin', 5);
+  checkActivity(4 * 60);
+  check('awake before the limit', brain.mode !== 'sleep');
+  checkActivity(5 * 60 + 1);
+  check('asleep after 5 min idle (durmiendo)', brain.mode === 'sleep' && brain.anim === 'durmiendo', `mode=${brain.mode}`);
+  const sleepX = brain.x;
+  await wait(1500);
+  checkActivity(9999);
+  check('stays asleep, no wandering', brain.mode === 'sleep' && brain.x === sleepX);
+  checkActivity(0.5);
+  check('wakes on activity with a yawn', brain.mode === 'wake' && brain.anim === 'bostezando', `anim=${brain.anim}`);
+  await wait(3000);
+  check('...then stretches', brain.anim === 'estirandose', `anim=${brain.anim}`);
+  await wait(2600);
+  check('...then carries on', !['sleep', 'wake'].includes(brain.mode), `mode=${brain.mode}`);
+  settings.set('sleepAfterMin', 0);
+  await settle(); brain.mode = 'idle'; brain.next();
+  checkActivity(99999);
+  check('"Never" keeps him awake', brain.mode !== 'sleep');
+  settings.set('sleepAfterMin', 5);
+
+  // ---- phase 4: mood ----
+  const weightOf = a => (brain._idlePool().find(([n]) => n === a) || [, 0])[1];
+  brain.setMood(null);
+  const base = weightOf('bostezando');
+  brain.setMood(computeMood({ date: new Date(2026, 10, 17, 2) })); // Tuesday 2am -> tired
+  check('2am mood is tired', brain.mood.mood === 'tired');
+  check('tired mood boosts yawning', weightOf('bostezando') > base * 2, `${base} -> ${weightOf('bostezando')}`);
+  brain.setMood(computeMood({ date: new Date(2026, 10, 19, 10), weather: { code: 95, tempC: 18, isDay: true } }));
+  check('thunderstorm makes him scared and adds scared animations', brain.mood.mood === 'scared' && weightOf('asustado') > 0 && weightOf('escondido') > 0);
+  brain.setMood(computeMood({ date: new Date(2026, 10, 18, 16), battery: { percent: 8, charging: false } }));
+  check('battery 8% makes him grumpy', brain.mood.mood === 'grumpy' && weightOf('enfadado') > 0);
+  getMood().recompute(); // back to the real mood
+
   // ---- settings ----
   settings.set('personality', 'sleepy');
   check('personality applied', brain.personalityId === 'sleepy');
@@ -276,7 +314,14 @@ async function run({ app, petWin, brain, settings, openSettings, getPopup, getSe
   const sw = getSettingsWin();
   const cards = sw && await sw.webContents.executeJavaScript('document.querySelectorAll("label.card").length');
   check('settings lists 6 personalities', cards === 6, `cards=${cards}`);
-  if (sw) await shot(sw, 'settings.png');
+  const moodText = sw && await sw.webContents.executeJavaScript('document.getElementById("moodLabel").textContent');
+  check('settings shows the current mood', /^Feeling /.test(moodText || ''), moodText);
+  if (sw) {
+    await shot(sw, 'settings.png');
+    await sw.webContents.executeJavaScript('document.getElementById("moodLabel").scrollIntoView({ block: "start" })');
+    await wait(300);
+    await shot(sw, 'settings-mood.png');
+  }
 
   clearTimeout(timeout);
   console.log(results.every(Boolean) ? 'SMOKE OK' : 'SMOKE FAILED');

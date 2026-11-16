@@ -8,7 +8,15 @@ const { PERSONALITIES, DEFAULT_PERSONALITY, STAY_POSES } = require('./personalit
 
 const SIZE_MIN = 0.5;
 const SIZE_MAX = 2;
-const DEFAULTS = { personality: DEFAULT_PERSONALITY, size: 1, stayStill: false, stayPose: 'sentado' };
+const DEFAULTS = {
+  personality: DEFAULT_PERSONALITY,
+  size: 1,
+  stayStill: false,
+  stayPose: 'sentado',
+  sleepAfterMin: 5,       // fall asleep after this many minutes without mouse/keyboard; 0 = never
+  weatherEnabled: true,   // let weather influence mood (uses approximate location, see mood.js)
+  locationOverride: '',   // city name; empty = approximate location from IP
+};
 
 const VALIDATORS = {
   personality: v => (PERSONALITIES[v] ? v : null),
@@ -16,6 +24,9 @@ const VALIDATORS = {
     ? Math.round(Math.min(SIZE_MAX, Math.max(SIZE_MIN, v)) * 100) / 100 : null),
   stayStill: v => (typeof v === 'boolean' ? v : null),
   stayPose: v => (STAY_POSES.some(p => p.id === v) ? v : null),
+  sleepAfterMin: v => (Number.isInteger(v) && v >= 0 && v <= 240 ? v : null),
+  weatherEnabled: v => (typeof v === 'boolean' ? v : null),
+  locationOverride: v => (typeof v === 'string' ? v.replace(/[\u0000-\u001f]/g, '').trim().slice(0, 80) : null),
 };
 
 class Settings extends EventEmitter {

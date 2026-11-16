@@ -31,5 +31,6 @@ contextBridge.exposeInMainWorld('tito', {
     get: () => ipcRenderer.invoke('settings:get'),
     set: (key, value) => ipcRenderer.invoke('settings:set', key, value),
     onChanged: cb => ipcRenderer.on('settings:changed', (_e, all) => cb(all)),
+    onMood: cb => ipcRenderer.on('settings:mood', (_e, m) => cb(m)),
   },
 });

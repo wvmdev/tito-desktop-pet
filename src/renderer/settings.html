@@ -61,6 +61,26 @@
     label.pose img { width: 46px; height: 40px; object-fit: contain; }
     label.pose:has(input:checked) { outline: 2px solid var(--accent); outline-offset: -2px; }
     label.pose:has(input:focus-visible) { outline: 3px solid var(--accent); }
+    .mood { display: flex; gap: 14px; align-items: center; padding: 14px 16px; border-radius: 16px; }
+    .mood > * { position: relative; z-index: 1; }
+    .mood .emoji { font-size: 30px; line-height: 1; }
+    .mood .now { font-weight: 650; font-size: 15px; }
+    .mood ul { margin: 4px 0 0; padding: 0; list-style: none; color: var(--ink-muted); font-size: 12px; display: flex; flex-wrap: wrap; gap: 4px 6px; }
+    .mood li { background: var(--glass-hover); border-radius: 999px; padding: 2px 8px; }
+    .stack { display: flex; flex-direction: column; gap: 8px; margin-top: 8px; }
+    .field { display: flex; align-items: center; gap: 12px; padding: 11px 16px; border-radius: 16px; }
+    .field > * { position: relative; z-index: 1; }
+    .field .text { flex: 1; }
+    .field .title { font-weight: 600; }
+    .field .sub { color: var(--ink-muted); font-size: 12px; margin-top: 2px; }
+    select, input[type=text] {
+      font: inherit; color: var(--ink); background: var(--glass-hover); border: 1px solid var(--glass-divider);
+      border-radius: 9px; padding: 5px 9px; outline: none;
+    }
+    select:focus-visible, input[type=text]:focus-visible { border-color: var(--accent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 35%, transparent); }
+    input[type=text] { width: 150px; }
+    .warn { color: #c4572e; font-size: 12px; margin: 4px 4px 0; min-height: 0; }
+    @media (prefers-color-scheme: dark) { .warn { color: #f09a76; } }
     .soon { color: var(--ink-muted); font-size: 12px; padding: 12px 16px; border-radius: 16px; }
     .soon > * { position: relative; z-index: 1; }
   </style>
@@ -87,6 +107,51 @@
       </span>
     </div>
     <div class="poses" id="poses" role="radiogroup" aria-label="Pose"></div>
+
+    <h2>Mood</h2>
+    <div class="mood glass" aria-live="polite">
+      <div class="emoji" id="moodEmoji" aria-hidden="true">😺</div>
+      <div>
+        <div class="now" id="moodLabel">…</div>
+        <ul id="moodReasons" aria-label="Why"></ul>
+      </div>
+    </div>
+    <div class="stack">
+      <div class="field glass">
+        <div class="text">
+          <label class="title" for="sleepAfter">Nap when I'm away</label>
+          <div class="sub">No mouse or keyboard for a while → Tito curls up and sleeps.</div>
+        </div>
+        <select id="sleepAfter">
+          <option value="1">After 1 min</option>
+          <option value="2">After 2 min</option>
+          <option value="5">After 5 min</option>
+          <option value="10">After 10 min</option>
+          <option value="15">After 15 min</option>
+          <option value="30">After 30 min</option>
+          <option value="60">After 1 hour</option>
+          <option value="0">Never</option>
+        </select>
+      </div>
+      <div class="field glass">
+        <div class="text">
+          <div class="title" id="weatherTitle">Weather affects mood</div>
+          <div class="sub">Uses your approximate location from your IP address (ipwho.is) and Open-Meteo, or the city below.</div>
+        </div>
+        <span class="switch">
+          <input type="checkbox" id="weather" role="switch" aria-labelledby="weatherTitle">
+          <span class="track"></span><span class="knob"></span>
+        </span>
+      </div>
+      <div class="field glass">
+        <div class="text">
+          <label class="title" for="city">City</label>
+          <div class="sub">Leave empty to use your approximate location.</div>
+        </div>
+        <input type="text" id="city" placeholder="e.g. Brussels" maxlength="80" autocomplete="off" spellcheck="false">
+      </div>
+    </div>
+    <div class="warn" id="weatherWarn" aria-live="polite"></div>
 
     <h2>Size</h2>
     <div class="row glass">
