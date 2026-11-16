@@ -53,7 +53,7 @@ class Brain extends EventEmitter {
     this._play = play;
     this.mode = 'init';
     this.facing = 'left';
-    this.paused = false;
+    this.stayPose = null; // set = "Stay still" mode: loop this pose, no wandering
     this.x = 0;
     this.y = 0;
     this.surface = { kind: 'ground' }; // or { kind: 'window', id, lastX }
@@ -193,10 +193,10 @@ class Brain extends EventEmitter {
   }
 
   // ---------- autonomous loop ----------
-  start() { this.y = this.standY(); this._commit(); this.idle(); }
+  start() { this.y = this.standY(); this._commit(); this.idle({ forever: !!this.stayPose }); }
 
   next() {
-    if (this.paused) return this.idle({ forever: true });
+    if (this.stayPose) return this.idle({ forever: true });
     if (this.mode !== 'idle') return this.idle(); // after any move, settle into an idle
     if (Math.random() < this.p.idleChain) return this.idle();
     const moves = Object.entries(this.p.moves).filter(([k, w]) => w > 0 && this._canDo(k));
@@ -233,9 +233,12 @@ class Brain extends EventEmitter {
     this._setMode(mode, { target: Math.round(target), dir, ...info });
     this._anim(anim, animSpeed);
     this._tickFn = dt => {
+      const fx0 = this.footX();
       this.x += dir * speed * dt;
       const arrived = (target - this.x) * dir <= 0;
       if (arrived) this.x = target;
+      const wall = this._wallCrossed(fx0, this.footX());
+      if (wall) { this._hitWall(wall, dir, { mode, anim, animSpeed, speed }); return; }
       if (this._lostFooting()) { this._commit(); this._fall(); return; }
       this._commit();
       if (arrived) (onArrive || (() => this.next()))();
@@ -277,6 +280,7 @@ class Brain extends EventEmitter {
       this._anim('saltando', HOP_ANIM);
       this._tickFn = (_dt, now) => {
         const f = (now - t0) / frameMs;
+        const fx0 = this.footX();
         if (f >= 1 && f < 4) {
           const p = (f - 1) / 3;
           this.x = x0 + dir * dist * p;
@@ -286,6 +290,8 @@ class Brain extends EventEmitter {
           this.y = g;
         }
         if (this.surface.kind === 'ground') this._clampX();
+        const wall = this._wallCrossed(fx0, this.footX());
+        if (wall) { this.y = g; this._hitWall(wall, dir); return; }
         if (f >= 4 && this._lostFooting()) { this._commit(); this._fall(); return; }
         this._commit();
         if (f >= (last ? 8 : 5)) {
@@ -307,11 +313,76 @@ class Brain extends EventEmitter {
     this._anim('cazando', 1.2);
     const until = performance.now() + (LOOP_MS / 1.2) * Math.round(rand(1, 2));
     this._tickFn = (dt, now) => {
+      const fx0 = this.footX();
       this.x += dir * STALK_SPEED * this.size * dt;
       this._clampX();
+      const wall = this._wallCrossed(fx0, this.footX());
+      if (wall) { this._hitWall(wall, dir); return; }
       this._commit();
       if (now >= until) this.hops(1, { dist: 120, height: 70 });
     };
+  }
+
+  // ---------- windows in the way: climb them or turn back ----------
+  // The side of a window counts as a wall when the window overlaps Tito's body height and that
+  // part of its side isn't hidden behind another window. Returns the nearest side crossed while
+  // the feet moved from fx0 to fx1.
+  _wallCrossed(fx0, fx1) {
+    if (fx0 === fx1) return null;
+    const fy = this.footY();
+    const bandTop = fy - 70 * this.size;
+    const bandBot = fy - 6;
+    let best = null;
+    this.windows.forEach((w, i) => {
+      if (this.surface.kind === 'window' && w.id === this.surface.id) return;
+      if (w.y > bandBot || w.y + w.h < bandTop) return;
+      const side = fx1 > fx0 ? 'left' : 'right'; // moving right meets a left side, and vice versa
+      const sx = side === 'left' ? w.x : w.x + w.w;
+      const crossed = fx1 > fx0 ? fx0 < sx && fx1 >= sx : fx0 > sx && fx1 <= sx;
+      if (!crossed) return;
+      const py = Math.min(w.y + w.h - 1, Math.max(w.y + 1, fy - 30 * this.size));
+      if (this._occluded(i, side === 'left' ? sx + 1 : sx - 1, py)) return;
+      if (!best || Math.abs(sx - fx0) < Math.abs(best.sx - fx0)) best = { w, side, sx };
+    });
+    return best;
+  }
+
+  // Bumped into a window: climb it (personality-dependent) or look up at it and go back.
+  _hitWall(wall, dir, travel = null) {
+    this._clear();
+    this.x = wall.sx - dir * 16 * this.size - this.W / 2;
+    this.y = this.standY();
+    this._commit();
+    const t = this._climbInfo(wall.w, wall.side);
+    const c = this.p.moves.climb || 0;
+    const climbChance = Math.min(0.8, Math.max(0.15, c / (c + 2)));
+    this.emit('wall', { window: wall.w.id, climbable: !!t });
+    if (t && this.surface.kind === 'ground' && Math.random() < climbChance) { this._climbUp(t); return; }
+    this._setMode('idle', { name: 'mirando_arriba', wall: true });
+    this.facing = dir < 0 ? 'left' : 'right';
+    this._anim('mirando_arriba', 2);
+    this._after(1100, () => {
+      const back = -dir;
+      const [lo, hi] = this.xBounds();
+      const room = back < 0 ? this.x - lo : hi - this.x;
+      const dist = Math.min(room, rand(150, 450) * this.size);
+      const tr = travel && travel.mode !== 'walk' && travel.mode !== 'run' ? null : travel;
+      const s = this.p.walkSpeed;
+      this._travelTo(this.x + back * Math.max(dist, 20), tr || {
+        mode: 'walk', anim: 'caminando', animSpeed: WALK_ANIM * s, speed: WALK_SPEED * s * this.size,
+      });
+    });
+  }
+
+  // Can Tito climb this side of window w and stand on top? Returns a climb target or null.
+  _climbInfo(w, side) {
+    const a = this.area();
+    if (w.y < a.y + this.H || w.y > this.floorTop() - 120) return null; // too high / too low
+    const sx = side === 'left' ? w.x : w.x + w.w;
+    if (sx < a.x + 40 || sx > a.x + a.width - 40) return null;
+    const landX = side === 'left' ? w.x + LEDGE_INSET + 20 : w.x + w.w - LEDGE_INSET - 20;
+    if (!this._standable(w, landX)) return null;
+    return { w, side, sx, landX };
   }
 
   // ---------- climbing a window's side (escalando) ----------
@@ -323,11 +394,8 @@ class Brain extends EventEmitter {
       if (w.y < a.y + this.H || w.y > this.floorTop() - 120) continue;  // too high / too low
       if (w.x + w.w < a.x || w.x > a.x + a.width) continue;
       for (const side of ['left', 'right']) {
-        const sx = side === 'left' ? w.x : w.x + w.w;
-        if (sx < a.x + 40 || sx > a.x + a.width - 40) continue;
-        const landX = side === 'left' ? w.x + LEDGE_INSET + 20 : w.x + w.w - LEDGE_INSET - 20;
-        if (!this._standable(w, landX)) continue;
-        options.push({ w, side, sx, landX, d: Math.abs(sx - fx) });
+        const t = this._climbInfo(w, side);
+        if (t) options.push({ ...t, d: Math.abs(t.sx - fx) });
       }
     }
     options.sort((p, q) => p.d - q.d);
@@ -401,7 +469,7 @@ class Brain extends EventEmitter {
     this._clear();
     this.y = this.standY();
     this._commit();
-    const name = forever ? 'sentado' : pickWeighted(this.p.idle);
+    const name = forever ? (this.stayPose || 'sentado') : pickWeighted(this.p.idle);
     const [lo, hi] = this.p.idleLoops;
     const loops = Math.max(1, Math.round(rand(lo, hi)));
     const speed = this.p.animSpeed;
@@ -410,8 +478,9 @@ class Brain extends EventEmitter {
     if (!forever) this._after((loops * LOOP_MS) / speed, () => this.next());
   }
 
-  setPaused(paused) {
-    this.paused = paused;
+  // "Stay still": pose id to hold, or null to wander again.
+  setStay(pose) {
+    this.stayPose = pose || null;
     if (this._autonomous()) { this.mode = 'idle'; this.next(); }
   }
 

@@ -8,7 +8,7 @@ const { spawn, execFile } = require('child_process');
 const { pathToFileURL } = require('url');
 const { Brain } = require('./brain');
 const { Settings, SIZE_MIN, SIZE_MAX } = require('./settings');
-const { personalityList } = require('./personalities');
+const { personalityList, STAY_POSES } = require('./personalities');
 
 const ROOT = path.join(__dirname, '..');
 // Base window box at size 1. Sprites are normalised so Tito looks the same size in every
@@ -98,7 +98,8 @@ function createPetWindow() {
   brain.on('openSize', () => openPopup('size'));
   brain.on('closeMenu', closePopup);
   if (process.env.TITO_DEBUG) brain.on('mode', (m, info) => console.log('[brain]', m, JSON.stringify(info), 'at', Math.round(brain.x), Math.round(brain.y)));
-  if (process.env.TITO_STAY) brain.paused = true; // dev: sit still for input testing
+  if (settings.get('stayStill')) brain.setStay(settings.get('stayPose'));
+  if (process.env.TITO_STAY) brain.setStay('sentado'); // dev: sit still for input testing
 }
 
 function applySize(size) {
@@ -266,7 +267,7 @@ function registerIpc() {
 
   ipcMain.handle('settings:get', e => {
     if (!fromSettings(e)) throw new Error('denied');
-    return { settings: settings.all(), personalities: personalityList(), sizeRange: [SIZE_MIN, SIZE_MAX] };
+    return { settings: settings.all(), personalities: personalityList(), sizeRange: [SIZE_MIN, SIZE_MAX], stayPoses: STAY_POSES };
   });
   ipcMain.handle('settings:set', (e, key, value) => {
     if (!fromSettings(e)) throw new Error('denied');
@@ -299,10 +300,17 @@ function createTray() {
     .resize({ height: 18 });
   tray = new Tray(icon);
   tray.setToolTip('Tito');
+  refreshTrayMenu();
+}
+// Rebuilt whenever stay-still changes so the checkbox always matches Settings.
+function refreshTrayMenu() {
+  if (!tray) return;
+  const pose = STAY_POSES.find(p => p.id === settings.get('stayPose'));
   tray.setContextMenu(Menu.buildFromTemplate([
     { label: 'Settings…', click: openSettings },
     { label: 'Size…', click: () => openPopup('size') },
-    { label: 'Stay put', type: 'checkbox', click: item => brain.setPaused(item.checked) },
+    { label: `Stay still (${pose ? pose.label.toLowerCase() : 'sitting'})`, type: 'checkbox',
+      checked: settings.get('stayStill'), click: item => settings.set('stayStill', item.checked) },
     { type: 'separator' },
     { label: 'Quit Tito', role: 'quit' },
   ]));
@@ -315,6 +323,11 @@ app.whenReady().then(() => {
   settings.on('change', (key, value) => {
     if (key === 'personality' && brain) brain.setPersonality(value);
     if (key === 'size') applySize(value);
+    if (key === 'stayStill' || key === 'stayPose') {
+      if (brain) brain.setStay(settings.get('stayStill') ? settings.get('stayPose') : null);
+      refreshTrayMenu();
+      if (settingsWin) settingsWin.webContents.send('settings:changed', settings.all());
+    }
   });
   registerIpc();
   createPetWindow();

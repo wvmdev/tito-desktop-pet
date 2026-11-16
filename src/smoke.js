@@ -210,6 +210,50 @@ async function run({ app, petWin, brain, settings, openSettings, getPopup, getSe
   brain.setWindows([]);
   await wait(1500);
 
+  // ---- walls: a window in his path is climbed or makes him turn back ----
+  const floor = brain.floorTop();
+  const wall = { id: 7, pid: 97, x: wa.x + 700, y: floor - 320, w: 300, h: 320 };
+  const realRandom = Math.random;
+  for (const [label, r] of [['climbs it', 0], ['turns back', 0.99]]) {
+    brain.setWindows([wall]);
+    await settle();
+    brain.surface = { kind: 'ground' };
+    brain.facing = 'right';
+    brain.x = wall.x - 250 - brain.W / 2; brain.y = brain.standY(); brain._commit();
+    Math.random = () => r;
+    brain._travelTo(wall.x + 300 - brain.W / 2, { mode: 'walk', anim: 'caminando', animSpeed: 2.2, speed: 300 });
+    await wait(1100);
+    Math.random = realRandom;
+    const crossed = brain.footX() > wall.x + 5 && brain.surface.kind === 'ground';
+    if (r === 0) {
+      let ok = brain.mode === 'climb';
+      for (let i = 0; i < 40 && brain.surface.kind !== 'window'; i++) await wait(100);
+      check(`walking into a window: ${label}`, ok && brain.surface.kind === 'window' && brain.surface.id === 7 && !crossed,
+        `mode=${brain.mode} surface=${brain.surface.kind}`);
+    } else {
+      const looked = brain.anim === 'mirando_arriba' || modes.slice(-3).some(m => m.info && m.info.wall);
+      await wait(1300);
+      check(`walking into a window: ${label}`, looked && !crossed && brain.facing === 'left' && brain.footX() < wall.x,
+        `mode=${brain.mode} facing=${brain.facing} foot=${Math.round(brain.footX())} wall=${wall.x}`);
+    }
+  }
+  brain.setWindows([]);
+  await wait(1500);
+
+  // ---- stay still ----
+  settings.set('stayPose', 'durmiendo');
+  settings.set('stayStill', true);
+  await wait(300);
+  const sx0 = brain.x;
+  await wait(2500);
+  check('stay still holds the chosen pose in place', brain.anim === 'durmiendo' && brain.mode === 'idle' && brain.x === sx0, `anim=${brain.anim} mode=${brain.mode} x=${brain.x} x0=${sx0}`);
+  brain.dragStart(); brain.dragMove(brain.x + 150, brain.y - 200); brain.dragEnd();
+  await wait(2800);
+  check('after a drag he lands and goes back to the pose', brain.anim === 'durmiendo', `anim=${brain.anim} mode=${brain.mode}`);
+  settings.set('stayStill', false);
+  await wait(200);
+  check('turning stay still off lets him wander again', brain.stayPose === null);
+
   // ---- every move faces its travel direction ----
   for (const move of ['walk', 'run', 'stalk']) {
     await settle();

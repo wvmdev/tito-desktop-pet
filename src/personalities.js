@@ -97,8 +97,26 @@ const PERSONALITIES = {
 
 const DEFAULT_PERSONALITY = 'balanced';
 
+// Poses for "Stay still" mode (Settings). Each loops in place until the user turns it off.
+const STAY_POSES = [
+  { id: 'sentado', label: 'Sitting' },
+  { id: 'de_pie', label: 'Standing' },
+  { id: 'durmiendo', label: 'Sleeping' },
+  { id: 'tumbado', label: 'Lying down' },
+  { id: 'dando_amor', label: 'Giving love' },
+  { id: 'jugando_pelota', label: 'Playing ball' },
+  { id: 'comiendo', label: 'Eating' },
+  { id: 'bebiendo', label: 'Drinking' },
+  { id: 'mirando_arriba', label: 'Looking up' },
+  { id: 'estirandose', label: 'Stretching' },
+  { id: 'escondido', label: 'Peeking' },
+  { id: 'celebrando', label: 'Celebrating' },
+  { id: 'cansado', label: 'Tired' },
+  { id: 'enfadado', label: 'Grumpy' },
+];
+
 // Shape sent to the settings UI (no functions, just labels).
 const personalityList = () =>
   Object.entries(PERSONALITIES).map(([id, p]) => ({ id, label: p.label, description: p.description }));
 
-module.exports = { PERSONALITIES, DEFAULT_PERSONALITY, personalityList };
+module.exports = { PERSONALITIES, DEFAULT_PERSONALITY, personalityList, STAY_POSES };

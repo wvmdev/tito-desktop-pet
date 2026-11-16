@@ -4,16 +4,18 @@ const { app } = require('electron');
 const fs = require('fs');
 const path = require('path');
 const EventEmitter = require('events');
-const { PERSONALITIES, DEFAULT_PERSONALITY } = require('./personalities');
+const { PERSONALITIES, DEFAULT_PERSONALITY, STAY_POSES } = require('./personalities');
 
 const SIZE_MIN = 0.5;
 const SIZE_MAX = 2;
-const DEFAULTS = { personality: DEFAULT_PERSONALITY, size: 1 };
+const DEFAULTS = { personality: DEFAULT_PERSONALITY, size: 1, stayStill: false, stayPose: 'sentado' };
 
 const VALIDATORS = {
   personality: v => (PERSONALITIES[v] ? v : null),
   size: v => (typeof v === 'number' && Number.isFinite(v)
     ? Math.round(Math.min(SIZE_MAX, Math.max(SIZE_MIN, v)) * 100) / 100 : null),
+  stayStill: v => (typeof v === 'boolean' ? v : null),
+  stayPose: v => (STAY_POSES.some(p => p.id === v) ? v : null),
 };
 
 class Settings extends EventEmitter {

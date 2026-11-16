@@ -7,7 +7,7 @@ const ICON = {
 if (window.tito.platform !== 'darwin') document.body.classList.add('no-vibrancy');
 
 async function init() {
-  const { personalities, settings, sizeRange } = await api.get();
+  const { personalities, settings, sizeRange, stayPoses } = await api.get();
 
   const grid = document.getElementById('personalities');
   for (const p of personalities) {
@@ -31,6 +31,33 @@ async function init() {
     });
     grid.append(label);
   }
+
+  // ---- stay still ----
+  const stay = document.getElementById('stay');
+  const posesEl = document.getElementById('poses');
+  const syncStay = all => {
+    stay.checked = all.stayStill;
+    posesEl.classList.toggle('off', !all.stayStill);
+    for (const r of posesEl.querySelectorAll('input')) r.checked = r.value === all.stayPose;
+  };
+  for (const pose of stayPoses) {
+    const label = document.createElement('label');
+    label.className = 'pose glass';
+    const input = Object.assign(document.createElement('input'), { type: 'radio', name: 'pose', value: pose.id });
+    const img = Object.assign(document.createElement('img'), {
+      src: `../../assets/sprites/${pose.id}/${pose.id}_0.png`, alt: '',
+    });
+    label.append(input, img, Object.assign(document.createElement('span'), { textContent: pose.label }));
+    // Picking a pose also turns "Stay still" on.
+    input.addEventListener('change', async () => {
+      await api.set('stayPose', pose.id);
+      if (!stay.checked) await api.set('stayStill', true);
+    });
+    posesEl.append(label);
+  }
+  stay.addEventListener('change', () => api.set('stayStill', stay.checked));
+  syncStay(settings);
+  api.onChanged(syncStay); // e.g. toggled from the menu-bar icon
 
   const size = document.getElementById('size');
   const sizeVal = document.getElementById('sizeVal');
