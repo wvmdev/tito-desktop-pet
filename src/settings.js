@@ -6,7 +6,7 @@ const path = require('path');
 const EventEmitter = require('events');
 const { PERSONALITIES, DEFAULT_PERSONALITY, STAY_POSES } = require('./personalities');
 const { LEVELS, DEFAULT_PERMS, validatePerms } = require('./ai/permissions');
-const { DEFAULT_MODELS } = require('./ai/providers');
+const { DEFAULT_MODELS, PROVIDER_IDS } = require('./ai/providers');
 
 const MODEL_RE = /^[A-Za-z0-9._:\/@-]{1,120}$/;
 // Custom endpoints: https anywhere, plain http only for this machine (local model servers).
@@ -31,9 +31,7 @@ const DEFAULTS = {
   weatherEnabled: true,   // let weather influence mood (uses approximate location, see mood.js)
   locationOverride: '',   // city name; empty = approximate location from IP
   aiProvider: 'anthropic',
-  anthropicModel: DEFAULT_MODELS.anthropic,
-  openaiModel: DEFAULT_MODELS.openai,
-  customModel: '',
+  aiModels: DEFAULT_MODELS, // model chosen per provider, e.g. { anthropic: 'claude-opus-5-5', groq: '...' }
   customBaseURL: '',
   securityLevel: 'guarded',
   actionPerms: DEFAULT_PERMS,
@@ -47,10 +45,18 @@ const VALIDATORS = {
   stayPose: v => (STAY_POSES.some(p => p.id === v) ? v : null),
   sleepAfterMin: v => (Number.isInteger(v) && v >= 0 && v <= 240 ? v : null),
   weatherEnabled: v => (typeof v === 'boolean' ? v : null),
-  aiProvider: v => (['anthropic', 'openai', 'custom'].includes(v) ? v : null),
-  anthropicModel: v => (typeof v === 'string' && MODEL_RE.test(v.trim()) ? v.trim() : null),
-  openaiModel: v => (typeof v === 'string' && MODEL_RE.test(v.trim()) ? v.trim() : null),
-  customModel: v => (typeof v === 'string' && (v.trim() === '' || MODEL_RE.test(v.trim())) ? v.trim() : null),
+  aiProvider: v => (PROVIDER_IDS.includes(v) ? v : null),
+  aiModels: v => {
+    if (!v || typeof v !== 'object') return null;
+    const out = { ...DEFAULT_MODELS };
+    for (const id of PROVIDER_IDS) {
+      const m = typeof v[id] === 'string' ? v[id].trim() : undefined;
+      if (m === undefined) continue;
+      if (m !== '' && !MODEL_RE.test(m)) return null;
+      out[id] = m;
+    }
+    return out;
+  },
   customBaseURL: v => (typeof v === 'string' ? validBaseURL(v.trim()) : null),
   securityLevel: v => (LEVELS.includes(v) ? v : null),
   actionPerms: v => validatePerms(v),
@@ -64,6 +70,10 @@ class Settings extends EventEmitter {
     this.data = { ...DEFAULTS };
     let saved = {};
     try { saved = JSON.parse(fs.readFileSync(this.file, 'utf8')); } catch { /* first run */ }
+    // Older versions stored one model setting per provider.
+    if (!saved.aiModels && (saved.anthropicModel || saved.openaiModel || saved.customModel)) {
+      saved.aiModels = { anthropic: saved.anthropicModel, openai: saved.openaiModel, custom: saved.customModel };
+    }
     for (const k of Object.keys(DEFAULTS)) {
       const v = k in saved ? VALIDATORS[k](saved[k]) : null;
       if (v !== null) this.data[k] = v;

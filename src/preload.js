@@ -38,5 +38,7 @@ contextBridge.exposeInMainWorld('tito', {
     saveKey: (provider, key) => ipcRenderer.invoke('ai:save-key', provider, key),
     removeKey: provider => ipcRenderer.invoke('ai:remove-key', provider),
     test: () => ipcRenderer.invoke('ai:test'),
+    listModels: () => ipcRenderer.invoke('ai:list-models'),
+    openKeyPage: id => ipcRenderer.invoke('ai:open-key-page', id),
   },
 });

@@ -208,28 +208,30 @@
     <h2>AI assistant</h2>
     <div class="panel glass">
       <div class="line">
-        <span class="lbl" id="provLbl">Provider</span>
-        <div class="seg" role="radiogroup" aria-labelledby="provLbl" id="providers">
-          <label><input type="radio" name="provider" value="anthropic">Claude</label>
-          <label><input type="radio" name="provider" value="openai">OpenAI</label>
-          <label><input type="radio" name="provider" value="custom">Custom</label>
-        </div>
+        <label class="lbl" for="provider">Provider</label>
+        <select id="provider"></select>
+        <button class="btn" id="keyPage" type="button">Get an API key ↗</button>
       </div>
       <div class="line">
         <label class="lbl" for="model">Model</label>
         <input type="text" id="model" list="modelList" autocomplete="off" spellcheck="false">
         <datalist id="modelList"></datalist>
+        <button class="btn" id="loadModels" type="button">Load models</button>
       </div>
       <div class="line" id="baseRow" hidden>
         <label class="lbl" for="baseURL">Base URL</label>
         <input type="url" id="baseURL" placeholder="https://… or http://localhost:11434/v1" autocomplete="off" spellcheck="false">
       </div>
-      <div class="line">
+      <div class="line" id="localNote" hidden>
+        <span class="lbl"></span>
+        <span class="note" id="localText"></span>
+      </div>
+      <div class="line" id="keyRow">
         <label class="lbl" for="apiKey">API key</label>
         <input type="password" id="apiKey" autocomplete="off" spellcheck="false" placeholder="Paste your key">
         <button class="btn primary" id="saveKey">Save</button>
       </div>
-      <div class="line">
+      <div class="line" id="keyStateRow">
         <span class="lbl"></span>
         <span class="keystate" id="keyState"></span>
         <button class="btn" id="removeKey" hidden>Remove</button>

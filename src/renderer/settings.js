@@ -99,36 +99,60 @@ async function init() {
   // ---- AI provider ----
   const aiApi = window.tito.ai;
   let aiState = ai;
-  const modelKey = { anthropic: 'anthropicModel', openai: 'openaiModel', custom: 'customModel' };
   const $ = id => document.getElementById(id);
+  const info = id => aiState.providers.find(p => p.id === id);
   const provider = () => settings.aiProvider;
+  const loaded = {}; // provider -> model ids fetched with "Load models"
+  const setResult = (cls, text) => { $('testResult').className = `result ${cls}`; $('testResult').textContent = text; };
+
+  $('provider').replaceChildren(...aiState.providers.map(p => Object.assign(document.createElement('option'), { value: p.id, textContent: p.label })));
   const renderProvider = () => {
     const p = provider();
-    for (const r of document.querySelectorAll('input[name=provider]')) r.checked = r.value === p;
-    $('model').value = settings[modelKey[p]] || '';
-    $('model').placeholder = p === 'custom' ? 'e.g. llama3.1' : '';
-    $('modelList').replaceChildren(...(aiState.suggestions[p] || []).map(m => Object.assign(document.createElement('option'), { value: m })));
-    $('baseRow').hidden = p !== 'custom';
+    const pi = info(p);
+    $('provider').value = p;
+    $('model').value = (settings.aiModels || {})[p] || '';
+    $('model').placeholder = pi.suggestions.length ? '' : 'Press "Load models" or type a model id';
+    const options = [...new Set([...(pi.suggestions || []), ...(loaded[p] || [])])];
+    $('modelList').replaceChildren(...options.map(m => Object.assign(document.createElement('option'), { value: m })));
+    $('baseRow').hidden = !pi.custom;
     $('baseURL').value = settings.customBaseURL || '';
-    const k = aiState.keys[p];
+    $('keyPage').hidden = !pi.hasKeyPage;
+    // Local servers need no key.
+    $('localNote').hidden = !pi.local;
+    $('localText').textContent = pi.local ? `No key needed. Make sure ${pi.label.replace(/ \(.*/, '')} is running on this Mac.` : '';
+    $('keyRow').hidden = pi.local;
+    $('keyStateRow').hidden = pi.local;
+    const k = aiState.keys[p] || { saved: false };
     $('keyState').textContent = !aiState.encryptionAvailable ? 'Secure storage unavailable: keys cannot be saved on this system.'
       : k.saved ? `Key saved (ending …${k.hint})` : 'No key saved yet';
     $('keyState').classList.toggle('ok', !!k.saved);
     $('removeKey').hidden = !k.saved;
     $('apiKey').value = '';
     $('apiKey').placeholder = k.saved ? 'Paste a new key to replace it' : 'Paste your key';
-    $('testResult').textContent = '';
+    setResult('', '');
   };
-  for (const r of document.querySelectorAll('input[name=provider]')) {
-    r.addEventListener('change', async () => { Object.assign(settings, await api.set('aiProvider', r.value)); renderProvider(); });
-  }
+  $('provider').addEventListener('change', async () => { Object.assign(settings, await api.set('aiProvider', $('provider').value)); renderProvider(); });
   $('model').addEventListener('change', async () => {
-    try { Object.assign(settings, await api.set(modelKey[provider()], $('model').value)); }
-    catch { $('testResult').className = 'result bad'; $('testResult').textContent = 'That model name has unsupported characters.'; }
+    try { Object.assign(settings, await api.set('aiModels', { ...settings.aiModels, [provider()]: $('model').value })); }
+    catch { setResult('bad', 'That model name has unsupported characters.'); }
   });
   $('baseURL').addEventListener('change', async () => {
-    try { Object.assign(settings, await api.set('customBaseURL', $('baseURL').value)); $('testResult').textContent = ''; }
-    catch { $('testResult').className = 'result bad'; $('testResult').textContent = 'Use an https:// address (http:// only for localhost).'; }
+    try { Object.assign(settings, await api.set('customBaseURL', $('baseURL').value)); setResult('', ''); }
+    catch { setResult('bad', 'Use an https:// address (http:// only for localhost).'); }
+  });
+  $('keyPage').addEventListener('click', () => aiApi.openKeyPage(provider()));
+  $('loadModels').addEventListener('click', async () => {
+    $('loadModels').disabled = true;
+    setResult('', 'Loading models…');
+    const r = await aiApi.listModels();
+    $('loadModels').disabled = false;
+    if (!r.ok) { setResult('bad', r.error.message); return; }
+    loaded[provider()] = r.models;
+    const keep = $('model').value;
+    renderProvider();
+    $('model').value = keep;
+    setResult('ok', `${r.models.length} models available. Click the Model field to pick one.`);
+    $('model').focus();
   });
   const saveKey = async () => {
     const v = $('apiKey').value;
@@ -137,20 +161,17 @@ async function init() {
     const r = await aiApi.saveKey(provider(), v);
     aiState = r.ai;
     renderProvider();
-    $('testResult').className = r.ok ? 'result ok' : 'result bad';
-    $('testResult').textContent = r.ok ? 'Key saved.' : r.error;
+    setResult(r.ok ? 'ok' : 'bad', r.ok ? 'Key saved.' : r.error);
   };
   $('saveKey').addEventListener('click', saveKey);
   $('apiKey').addEventListener('keydown', e => { if (e.key === 'Enter') saveKey(); });
   $('removeKey').addEventListener('click', async () => { aiState = (await aiApi.removeKey(provider())).ai; renderProvider(); });
   $('testBtn').addEventListener('click', async () => {
     $('testBtn').disabled = true;
-    $('testResult').className = 'result';
-    $('testResult').textContent = 'Testing…';
+    setResult('', 'Testing…');
     const r = await aiApi.test();
     $('testBtn').disabled = false;
-    $('testResult').className = r.ok ? 'result ok' : 'result bad';
-    $('testResult').textContent = r.ok ? `Connected to ${r.model} (${(r.ms / 1000).toFixed(1)}s): "${r.text}"` : r.error.message;
+    setResult(r.ok ? 'ok' : 'bad', r.ok ? `Connected to ${r.model} (${(r.ms / 1000).toFixed(1)}s): "${r.text}"` : r.error.message);
   });
   renderProvider();
 

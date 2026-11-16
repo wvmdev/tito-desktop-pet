@@ -1,7 +1,7 @@
 // Tito — main process.
 // Autonomous pet with personalities that walks on the desktop floor and on app windows,
 // click -> Settings/Chat popup, double-click -> size slider, drag & drop with falling.
-const { app, BrowserWindow, screen, ipcMain, protocol, net, Tray, Menu, nativeImage, powerMonitor, dialog } = require('electron');
+const { app, BrowserWindow, screen, ipcMain, protocol, net, Tray, Menu, nativeImage, powerMonitor, dialog, shell } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const { spawn, execFile } = require('child_process');
@@ -11,7 +11,7 @@ const { Settings, SIZE_MIN, SIZE_MAX } = require('./settings');
 const { personalityList, STAY_POSES } = require('./personalities');
 const { Mood } = require('./mood');
 const { SecretStore } = require('./ai/secrets');
-const { createProvider, normalizeError, MODEL_SUGGESTIONS } = require('./ai/providers');
+const { createProvider, normalizeError, PROVIDERS, providerList } = require('./ai/providers');
 const { LEVELS, PERM_TOGGLES } = require('./ai/permissions');
 
 const ROOT = path.join(__dirname, '..');
@@ -354,6 +354,18 @@ function registerIpc() {
     secrets.remove(provider);
     return { ok: true, ai: aiStatus() };
   });
+  ipcMain.handle('ai:list-models', async e => {
+    if (!fromSettings(e)) throw new Error('denied');
+    const key = secrets.get(settings.get('aiProvider'));
+    try { return { ok: true, models: await currentProvider({ requireModel: false }).listModels() }; }
+    catch (err) { return { ok: false, error: normalizeError(err, [key]) }; }
+  });
+  // Opens the provider's own key page; only URLs from the built-in registry, never one from the page.
+  ipcMain.handle('ai:open-key-page', (e, id) => {
+    if (!fromSettings(e)) throw new Error('denied');
+    const url = PROVIDERS[id] && PROVIDERS[id].keyPage;
+    if (url) shell.openExternal(url);
+  });
   ipcMain.handle('ai:test', async e => {
     if (!fromSettings(e)) throw new Error('denied');
     return testConnection();
@@ -362,16 +374,14 @@ function registerIpc() {
 
 // ---------- AI provider ----------
 function aiStatus() {
-  return { keys: secrets.status(), encryptionAvailable: secrets.available(), suggestions: MODEL_SUGGESTIONS };
+  return { keys: secrets.status(), encryptionAvailable: secrets.available(), providers: providerList() };
 }
 
 // The provider currently chosen in Settings, with its key decrypted just in time.
 function currentProvider(overrides = {}) {
   const provider = settings.get('aiProvider');
-  const model = provider === 'anthropic' ? settings.get('anthropicModel')
-    : provider === 'openai' ? settings.get('openaiModel') : settings.get('customModel');
   return createProvider({
-    provider, model, apiKey: secrets.get(provider),
+    provider, model: settings.get('aiModels')[provider], apiKey: secrets.get(provider),
     baseURL: provider === 'custom' ? settings.get('customBaseURL') : undefined,
     ...overrides,
   });

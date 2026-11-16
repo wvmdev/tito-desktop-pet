@@ -34,6 +34,9 @@ function startMockAI() {
         sse('message_delta', { type: 'message_delta', delta: { stop_reason: 'end_turn', stop_sequence: null }, usage: { output_tokens: 4 } });
         sse('message_stop', { type: 'message_stop' });
         res.end();
+      } else if (req.url.startsWith('/v1/models')) {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ object: 'list', data: [{ id: 'models/gemini-test-pro', object: 'model' }, { id: 'local-llm', object: 'model' }] }));
       } else if (req.url.startsWith('/v1/chat/completions')) {
         res.writeHead(200, { 'content-type': 'text/event-stream' });
         for (const t of ['Hello ', 'from ', 'custom.']) sse(null, { id: 'c1', object: 'chat.completion.chunk', model: 'local-llm', choices: [{ index: 0, delta: { content: t }, finish_reason: null }] });
@@ -401,7 +404,9 @@ async function run({ app, petWin, brain, settings, openSettings, getPopup, getSe
   sec.set('anthropic', KEY);
   const onDisk = fs.readFileSync(sec.file, 'utf8');
   check('key is encrypted on disk (no plain text)', !onDisk.includes(KEY) && !onDisk.includes('GOODKEY'));
-  check('key decrypts for main only; renderer status shows just a hint', sec.get('anthropic') === KEY && JSON.stringify(sec.status()) === JSON.stringify({ anthropic: { saved: true, hint: '3456' }, openai: { saved: false }, custom: { saved: false } }));
+  check('key decrypts for main only; renderer status shows just a hint', sec.get('anthropic') === KEY
+    && JSON.stringify(sec.status().anthropic) === JSON.stringify({ saved: true, hint: '3456' })
+    && !JSON.stringify(sec.status()).includes('GOODKEY'));
   let rejected = false;
   try { sec.set('openai', 'short'); } catch { rejected = true; }
   check('obviously invalid keys are refused', rejected);
@@ -437,7 +442,7 @@ async function run({ app, petWin, brain, settings, openSettings, getPopup, getSe
   // End-to-end through Settings: custom provider at a localhost base URL.
   settings.set('aiProvider', 'custom');
   settings.set('customBaseURL', `${mockBase}/v1`);
-  settings.set('customModel', 'local-llm');
+  settings.set('aiModels', { ...settings.get('aiModels'), custom: 'local-llm' });
   sec.set('custom', 'local-key-1234567890');
   const t1 = await testConnection();
   check('Test connection (custom endpoint)', t1.ok && t1.text === 'Hello from custom.', JSON.stringify(t1));
@@ -447,6 +452,27 @@ async function run({ app, petWin, brain, settings, openSettings, getPopup, getSe
   let badURL = false;
   try { settings.set('customBaseURL', 'http://example.com/v1'); } catch { badURL = true; }
   check('plain http base URLs only allowed for localhost', badURL);
+  // Presets: same OpenAI-compatible path with a built-in base URL (overridden to the mock here).
+  const groq = createProvider({ provider: 'groq', apiKey: 'gsk_test_key_1234567890', model: 'local-llm', baseURL: `${mockBase}/v1`, maxRetries: 0 });
+  const r3 = await groq.sendMessage([{ role: 'user', content: 'hi' }]);
+  check('preset provider (Groq) works through the shared interface', r3.text === 'Hello from custom.');
+  const gem = createProvider({ provider: 'gemini', apiKey: 'AIza-test-key-1234567890', baseURL: `${mockBase}/v1`, requireModel: false, maxRetries: 0 });
+  const gm = await gem.listModels();
+  check('Load models: lists ids (Gemini "models/" prefix stripped)', gm.includes('gemini-test-pro') && gm.includes('local-llm'), gm.join(','));
+  const oll = createProvider({ provider: 'ollama', model: 'local-llm', baseURL: `${mockBase}/v1`, maxRetries: 0 });
+  check('local provider (Ollama) needs no key', (await oll.sendMessage([{ role: 'user', content: 'hi' }])).text === 'Hello from custom.');
+  let noModel = null;
+  try { createProvider({ provider: 'mistral', apiKey: 'mistral-key-1234567890' }); } catch (e) { noModel = normalizeError(e); }
+  check('a provider without a chosen model says to load/pick one', noModel && noModel.code === 'config' && /Load models/.test(noModel.message));
+  check('every preset has a base URL or is Claude/OpenAI/custom', Object.entries(require('./ai/providers').PROVIDERS)
+    .every(([id, p]) => p.baseURL || p.custom || ['anthropic', 'openai'].includes(id)));
+  // Old settings files (one model key per provider) migrate to aiModels.
+  const { Settings } = require('./settings');
+  const savedJSON = fs.readFileSync(settings.file, 'utf8');
+  fs.writeFileSync(settings.file, JSON.stringify({ anthropicModel: 'claude-sonnet-5-5', openaiModel: 'gpt-5-mini' }));
+  const migrated = new Settings();
+  check('old per-provider model settings migrate', migrated.get('aiModels').anthropic === 'claude-sonnet-5-5' && migrated.get('aiModels').openai === 'gpt-5-mini');
+  fs.writeFileSync(settings.file, savedJSON);
   settings.set('aiProvider', 'anthropic');
   mock.server.close();
 
@@ -473,6 +499,14 @@ async function run({ app, petWin, brain, settings, openSettings, getPopup, getSe
   settings.set('securityLevel', 'guarded');
   const keyLeak = await sw.webContents.executeJavaScript('document.body.innerText');
   check('settings page never shows a saved key', !keyLeak.includes('GOODKEY') && keyLeak.includes('ending …3456'));
+  const nProviders = await sw.webContents.executeJavaScript('document.querySelectorAll("#provider option").length');
+  check('provider dropdown lists all presets', nProviders === 14, `options=${nProviders}`);
+  await sw.webContents.executeJavaScript('(() => { const s = document.getElementById("provider"); s.value = "ollama"; s.dispatchEvent(new Event("change")); })()');
+  await wait(300);
+  const localUI = await sw.webContents.executeJavaScript('[document.getElementById("keyRow").hidden, document.getElementById("localText").textContent]');
+  check('local provider hides the key field', localUI[0] === true && /No key needed/.test(localUI[1]), JSON.stringify(localUI));
+  await sw.webContents.executeJavaScript('(() => { const s = document.getElementById("provider"); s.value = "anthropic"; s.dispatchEvent(new Event("change")); })()');
+  await wait(300);
   check('settings shows the current mood', /^Feeling /.test(moodText || ''), moodText);
   if (sw) {
     await shot(sw, 'settings.png');

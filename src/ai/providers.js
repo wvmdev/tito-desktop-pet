@@ -15,18 +15,38 @@ const OpenAISDK = require('openai');
 const Anthropic = AnthropicSDK.default || AnthropicSDK;
 const OpenAI = OpenAISDK.default || OpenAISDK;
 
-const DEFAULT_MODELS = {
-  anthropic: 'claude-opus-5-5',
-  openai: 'gpt-5',
-  custom: '',
+// Ready-made providers. Everything except Claude speaks the OpenAI chat-completions protocol,
+// so a new preset is just a base URL. `local` providers run on this Mac and need no key.
+// Model lists change often, so beyond a default for Claude/OpenAI, Settings fetches the
+// provider's live list ("Load models") rather than hard-coding names that go stale.
+const PROVIDERS = {
+  anthropic: { label: 'Claude (Anthropic)', kind: 'anthropic', keyPage: 'https://console.anthropic.com/settings/keys',
+    defaultModel: 'claude-opus-5-5', suggestions: ['claude-opus-5-5', 'claude-sonnet-5-5', 'claude-haiku-5-5', 'claude-fable-5-2'] },
+  openai: { label: 'OpenAI', kind: 'openai', keyPage: 'https://platform.openai.com/api-keys',
+    defaultModel: 'gpt-5', suggestions: ['gpt-5', 'gpt-5-mini'] },
+  gemini: { label: 'Google Gemini', kind: 'openai', baseURL: 'https://generativelanguage.googleapis.com/v1beta/openai/',
+    keyPage: 'https://aistudio.google.com/apikey', stripModelPrefix: 'models/' },
+  groq: { label: 'Groq', kind: 'openai', baseURL: 'https://api.groq.com/openai/v1', keyPage: 'https://console.groq.com/keys' },
+  mistral: { label: 'Mistral', kind: 'openai', baseURL: 'https://api.mistral.ai/v1', keyPage: 'https://console.mistral.ai/api-keys' },
+  deepseek: { label: 'DeepSeek', kind: 'openai', baseURL: 'https://api.deepseek.com', keyPage: 'https://platform.deepseek.com/api_keys' },
+  xai: { label: 'xAI (Grok)', kind: 'openai', baseURL: 'https://api.x.ai/v1', keyPage: 'https://console.x.ai' },
+  openrouter: { label: 'OpenRouter', kind: 'openai', baseURL: 'https://openrouter.ai/api/v1', keyPage: 'https://openrouter.ai/keys' },
+  together: { label: 'Together AI', kind: 'openai', baseURL: 'https://api.together.xyz/v1', keyPage: 'https://api.together.xyz/settings/api-keys' },
+  cerebras: { label: 'Cerebras', kind: 'openai', baseURL: 'https://api.cerebras.ai/v1', keyPage: 'https://cloud.cerebras.ai' },
+  fireworks: { label: 'Fireworks AI', kind: 'openai', baseURL: 'https://api.fireworks.ai/inference/v1', keyPage: 'https://fireworks.ai/account/api-keys' },
+  ollama: { label: 'Ollama (on this Mac)', kind: 'openai', baseURL: 'http://localhost:11434/v1', local: true },
+  lmstudio: { label: 'LM Studio (on this Mac)', kind: 'openai', baseURL: 'http://localhost:1234/v1', local: true },
+  custom: { label: 'Custom (OpenAI-compatible)', kind: 'openai', custom: true },
 };
+const PROVIDER_IDS = Object.keys(PROVIDERS);
+const DEFAULT_MODELS = Object.fromEntries(PROVIDER_IDS.map(id => [id, PROVIDERS[id].defaultModel || '']));
+const MODEL_SUGGESTIONS = Object.fromEntries(PROVIDER_IDS.map(id => [id, PROVIDERS[id].suggestions || []]));
 
-// Suggestions shown in Settings (the field also accepts any other model id).
-const MODEL_SUGGESTIONS = {
-  anthropic: ['claude-opus-5-5', 'claude-sonnet-5-5', 'claude-haiku-5-5', 'claude-fable-5-2'],
-  openai: ['gpt-5', 'gpt-5-mini'],
-  custom: [],
-};
+// What Settings needs to draw the picker (no secrets).
+const providerList = () => PROVIDER_IDS.map(id => {
+  const p = PROVIDERS[id];
+  return { id, label: p.label, local: !!p.local, custom: !!p.custom, hasKeyPage: !!p.keyPage, suggestions: p.suggestions || [] };
+});
 
 const REQUEST_TIMEOUT_MS = 120000;
 const DEFAULT_MAX_TOKENS = 16000;
@@ -43,6 +63,12 @@ class AnthropicProvider {
     this.name = 'anthropic';
     this.model = model || DEFAULT_MODELS.anthropic;
     this.client = new Anthropic({ apiKey, baseURL: baseURL || undefined, maxRetries, timeout: REQUEST_TIMEOUT_MS });
+  }
+
+  async listModels() {
+    const ids = [];
+    for await (const m of this.client.models.list()) ids.push(m.id);
+    return ids;
   }
 
   async sendMessage(messages, { system, onText, signal, maxTokens = DEFAULT_MAX_TOKENS, effort = 'medium' } = {}) {
@@ -65,11 +91,18 @@ class AnthropicProvider {
 
 // ---------- OpenAI and any OpenAI-compatible endpoint ----------
 class OpenAICompatProvider {
-  constructor({ provider, apiKey, model, baseURL, maxRetries = 2 }) {
+  constructor({ provider, apiKey, model, baseURL, maxRetries = 2, requireModel = true }) {
     this.name = provider;
     this.model = model || DEFAULT_MODELS[provider];
-    if (!this.model) throw Object.assign(new Error('Choose a model for the custom endpoint.'), { code: 'config' });
+    if (requireModel && !this.model) throw Object.assign(new Error('Choose a model first (press "Load models" to see what this provider offers).'), { code: 'config' });
     this.client = new OpenAI({ apiKey, baseURL: baseURL || undefined, maxRetries, timeout: REQUEST_TIMEOUT_MS });
+  }
+
+  async listModels() {
+    const prefix = (PROVIDERS[this.name] || {}).stripModelPrefix;
+    const ids = [];
+    for await (const m of this.client.models.list()) ids.push(prefix && m.id.startsWith(prefix) ? m.id.slice(prefix.length) : m.id);
+    return ids.sort();
   }
 
   async sendMessage(messages, { system, onText, signal } = {}) {
@@ -89,15 +122,17 @@ class OpenAICompatProvider {
   }
 }
 
-function createProvider({ provider, apiKey, model, baseURL, maxRetries }) {
-  if (!apiKey) throw Object.assign(new Error('No API key saved for this provider yet.'), { code: 'no_key' });
-  if (provider === 'anthropic') return new AnthropicProvider({ apiKey, model, baseURL, maxRetries });
-  if (provider === 'openai') return new OpenAICompatProvider({ provider, apiKey, model, maxRetries });
-  if (provider === 'custom') {
-    if (!baseURL) throw Object.assign(new Error('Enter the base URL of your OpenAI-compatible endpoint.'), { code: 'config' });
-    return new OpenAICompatProvider({ provider, apiKey, model, baseURL, maxRetries });
-  }
-  throw Object.assign(new Error(`Unknown provider: ${provider}`), { code: 'config' });
+// baseURL: required for 'custom'; for presets it only overrides the built-in address (tests).
+function createProvider({ provider, apiKey, model, baseURL, maxRetries, requireModel }) {
+  const p = PROVIDERS[provider];
+  if (!p) throw Object.assign(new Error(`Unknown provider: ${provider}`), { code: 'config' });
+  // Local servers (Ollama, LM Studio) ignore the key, but the client needs a non-empty one.
+  if (!apiKey && !p.local) throw Object.assign(new Error('No API key saved for this provider yet.'), { code: 'no_key' });
+  const key = apiKey || 'local';
+  if (p.kind === 'anthropic') return new AnthropicProvider({ apiKey: key, model, baseURL, maxRetries });
+  const url = baseURL || p.baseURL;
+  if (!url && p.custom) throw Object.assign(new Error('Enter the base URL of your OpenAI-compatible endpoint.'), { code: 'config' });
+  return new OpenAICompatProvider({ provider, apiKey: key, model, baseURL: url, maxRetries, requireModel });
 }
 
 // ---------- errors ----------
@@ -128,10 +163,10 @@ function normalizeError(err, secrets = []) {
   else if (is('RateLimitError')) { code = 'rate_limit'; message = 'Rate limited or out of credit. Try again in a moment.'; }
   else if (is('BadRequestError')) { code = 'bad_request'; message = `The provider rejected the request: ${err.message}`; }
   else if (is('APIConnectionTimeoutError')) { code = 'timeout'; message = 'The provider took too long to answer.'; }
-  else if (is('APIConnectionError')) { code = 'network'; message = 'Could not reach the provider. Check your connection (and base URL).'; }
+  else if (is('APIConnectionError')) { code = 'network'; message = 'Could not reach the provider. Check your connection (and base URL; local servers must be running).'; }
   else if (is('InternalServerError') || (err && err.status >= 500)) { code = 'server'; message = 'The provider had a server error. Try again shortly.'; }
   else if (is('APIError')) { code = 'api'; message = `Provider error${err.status ? ` ${err.status}` : ''}: ${err.message}`; }
   return { code, message: redact(message, secrets) };
 }
 
-module.exports = { createProvider, normalizeError, redact, DEFAULT_MODELS, MODEL_SUGGESTIONS, supportsFallbacks };
+module.exports = { createProvider, normalizeError, redact, PROVIDERS, PROVIDER_IDS, providerList, DEFAULT_MODELS, MODEL_SUGGESTIONS, supportsFallbacks };

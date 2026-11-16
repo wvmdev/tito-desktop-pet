@@ -7,7 +7,7 @@ const { app, safeStorage } = require('electron');
 const fs = require('fs');
 const path = require('path');
 
-const PROVIDERS = ['anthropic', 'openai', 'custom'];
+const { PROVIDER_IDS: PROVIDERS } = require('./providers');
 
 class SecretStore {
   constructor(file = path.join(app.getPath('userData'), 'secrets.json')) {
