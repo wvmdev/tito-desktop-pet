@@ -34,6 +34,14 @@
     .msg pre { margin: 6px 0; padding: 8px 10px; border-radius: 10px; background: rgba(20, 24, 32, .82); color: #e8edf3; overflow-x: auto; white-space: pre; }
     .msg pre code { background: none; padding: 0; color: inherit; }
     .msg .meta { display: block; color: var(--ink-muted); font-size: 11px; margin-top: 4px; }
+    .act { align-self: flex-start; max-width: 92%; display: flex; gap: 8px; align-items: baseline; padding: 5px 10px; border-radius: 10px;
+      font-size: 12px; background: rgba(127, 127, 127, .12); border: 1px solid var(--glass-divider); }
+    .act .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--ink-muted); transform: translateY(-1px); }
+    .act .what { font-weight: 650; }
+    .act .more { color: var(--ink-muted); overflow-wrap: anywhere; }
+    .act.running .dot, .act.asking .dot { background: #d9a23a; animation: blink 1s steps(2) infinite; }
+    .act.done .dot { background: var(--accent); }
+    .act.denied .dot, .act.blocked .dot, .act.error .dot { background: #d0533a; }
     .err { align-self: stretch; display: flex; gap: 10px; align-items: center; padding: 9px 12px; border-radius: 14px;
       color: #b4472a; background: rgba(208, 83, 58, .1); border: 1px solid rgba(208, 83, 58, .25); }
     @media (prefers-color-scheme: dark) { .err { color: #f3a387; } }
@@ -71,7 +79,7 @@
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3.4 20.4 21 12 3.4 3.6 3.4 10l12 2-12 2z"/></svg>
         </button>
       </div>
-      <div class="hint" id="hint">Enter to send · Shift+Enter for a new line</div>
+      <div class="hint" id="hint">Enter to send · Shift+Enter for a new line · Esc stops Tito</div>
     </footer>
   </div>
   <script src="chat.js"></script>

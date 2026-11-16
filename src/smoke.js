@@ -13,6 +13,7 @@ const { decide, DEFAULT_PERMS } = require('./ai/permissions');
 // Minimal mock of the Anthropic Messages stream + an OpenAI-compatible chat stream.
 function startMockAI() {
   const seen = [];
+  const state = { script: [], claude: [] }; // queued scripted replies: { text?, calls?: [{ id, name, args }] }
   const server = http.createServer((req, res) => {
     let body = '';
     req.on('data', c => { body += c; });
@@ -27,6 +28,28 @@ function startMockAI() {
           return;
         }
         res.writeHead(200, { 'content-type': 'text/event-stream' });
+        if (state.claude.length) { // scripted Claude reply with a thinking block and tool calls
+          const sc = state.claude.shift();
+          sse('message_start', { type: 'message_start', message: { id: 'msg_s', type: 'message', role: 'assistant', model: 'claude-opus-5-5', content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 5, output_tokens: 0 } } });
+          let idx = 0;
+          sse('content_block_start', { type: 'content_block_start', index: idx, content_block: { type: 'thinking', thinking: '', signature: '' } });
+          sse('content_block_delta', { type: 'content_block_delta', index: idx, delta: { type: 'signature_delta', signature: 'SIG-123' } });
+          sse('content_block_stop', { type: 'content_block_stop', index: idx++ });
+          if (sc.text) {
+            sse('content_block_start', { type: 'content_block_start', index: idx, content_block: { type: 'text', text: '' } });
+            sse('content_block_delta', { type: 'content_block_delta', index: idx, delta: { type: 'text_delta', text: sc.text } });
+            sse('content_block_stop', { type: 'content_block_stop', index: idx++ });
+          }
+          for (const c of sc.calls || []) {
+            sse('content_block_start', { type: 'content_block_start', index: idx, content_block: { type: 'tool_use', id: c.id, name: c.name, input: {} } });
+            sse('content_block_delta', { type: 'content_block_delta', index: idx, delta: { type: 'input_json_delta', partial_json: JSON.stringify(c.args) } });
+            sse('content_block_stop', { type: 'content_block_stop', index: idx++ });
+          }
+          sse('message_delta', { type: 'message_delta', delta: { stop_reason: (sc.calls || []).length ? 'tool_use' : 'end_turn', stop_sequence: null }, usage: { output_tokens: 9 } });
+          sse('message_stop', { type: 'message_stop' });
+          res.end();
+          return;
+        }
         sse('message_start', { type: 'message_start', message: { id: 'msg_1', type: 'message', role: 'assistant', model: 'claude-opus-5-5', content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 5, output_tokens: 0 } } });
         sse('content_block_start', { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } });
         for (const t of ['Tito ', 'is ', 'connected.']) sse('content_block_delta', { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: t } });
@@ -42,7 +65,15 @@ function startMockAI() {
         const msgs = (seen.at(-1).body || {}).messages || [];
         const last = String((msgs[msgs.length - 1] || {}).content || '');
         const chunk = t => sse(null, { id: 'c1', object: 'chat.completion.chunk', model: 'local-llm', choices: [{ index: 0, delta: { content: t }, finish_reason: null }] });
-        const finish = () => { sse(null, { id: 'c1', object: 'chat.completion.chunk', model: 'local-llm', choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] }); res.write('data: [DONE]\n\n'); res.end(); };
+        const finish = (why = 'stop') => { sse(null, { id: 'c1', object: 'chat.completion.chunk', model: 'local-llm', choices: [{ index: 0, delta: {}, finish_reason: why }] }); res.write('data: [DONE]\n\n'); res.end(); };
+        if (state.script.length) {
+          const sc = state.script.shift();
+          if (sc.text) chunk(sc.text);
+          (sc.calls || []).forEach((c, i) => sse(null, { id: 'c1', object: 'chat.completion.chunk', model: 'local-llm', choices: [{ index: 0, finish_reason: null,
+            delta: { tool_calls: [{ index: i, id: c.id, type: 'function', function: { name: c.name, arguments: typeof c.args === 'string' ? c.args : JSON.stringify(c.args) } }] } }] }));
+          finish((sc.calls || []).length ? 'tool_calls' : 'stop');
+          return;
+        }
         if (last.includes('slow')) { // streams for ~6s so the test can press Stop
           let i = 0;
           const iv = setInterval(() => { if (res.writableEnded || res.destroyed) { clearInterval(iv); return; } chunk(`word${i} `); if (++i >= 30) { clearInterval(iv); finish(); } }, 200);
@@ -57,12 +88,12 @@ function startMockAI() {
       } else { res.writeHead(404); res.end(); }
     });
   });
-  return new Promise(r => server.listen(0, '127.0.0.1', () => r({ server, port: server.address().port, seen })));
+  return new Promise(r => server.listen(0, '127.0.0.1', () => r({ server, port: server.address().port, seen, state })));
 }
 
 const wait = ms => new Promise(r => setTimeout(r, ms));
 
-async function run({ app, petWin, brain, settings, openSettings, getPopup, getSettingsWin, checkActivity, getMood, getSecrets, testConnection, openChat, getChatWin, getChat }) {
+async function run({ app, petWin, brain, settings, openSettings, getPopup, getSettingsWin, checkActivity, getMood, getSecrets, testConnection, openChat, getChatWin, getChat, getExecutor, getConfirmWin, stopTask }) {
   const out = process.env.TITO_SMOKE;
   const wc = petWin.webContents;
   const results = [];
@@ -73,7 +104,7 @@ async function run({ app, petWin, brain, settings, openSettings, getPopup, getSe
   const js = code => wc.executeJavaScript(code);
   const settle = async () => { brain.mode = 'idle'; brain.idle({ forever: true }); await wait(500); };
   const wa = screen.getPrimaryDisplay().workArea;
-  const timeout = setTimeout(() => { console.log('SMOKE TIMEOUT'); app.exit(2); }, 150000);
+  const timeout = setTimeout(() => { console.log('SMOKE TIMEOUT'); app.exit(2); }, 330000);
 
   await new Promise(r => wc.once('did-finish-load', r));
   await wait(1500);
@@ -535,6 +566,184 @@ async function run({ app, petWin, brain, settings, openSettings, getPopup, getSe
     `history=${getChat().history().length}`);
   await typeAndSend('Hi Tito');
   await wait(800);
+  // ================= phase 7: computer control (fake "hands": nothing real is clicked) =================
+  const { globalShortcut, ipcMain } = require('electron');
+  const os = require('os');
+  const { runAgentTurn } = require('./ai/agent');
+  const { redactText } = require('./ai/redact');
+  const { ensureHelper, runHelper } = require('./ai/mac-backend');
+  const ex = getExecutor();
+  const sandbox = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'tito-files-')));
+  const fake = {
+    calls: [], rects: [], focused: false,
+    ownWindowRects() { return this.rects; },
+    ownWindowFocused() { return this.focused; },
+    async capture() { this.calls.push({ capture: true }); return { base64: 'QUJD', redacted: 1, geometry: { scale: 0.5, originX: 100, originY: 50, width: 640, height: 400 } }; },
+    async input(args, stdin) { this.calls.push({ args, stdin }); },
+    async openApp(n) { this.calls.push({ open: n }); },
+    async trash(f) { this.calls.push({ trash: f }); fs.rmSync(f, { recursive: true }); },
+  };
+  ex.backend = fake;
+  ex.roots = [sandbox];
+  const waitFor = async (fn, ms = 5000) => { const t = Date.now(); while (Date.now() - t < ms) { const v = await fn(); if (v) return v; await wait(40); } return null; };
+  const confirmShown = () => waitFor(() => { const w = getConfirmWin(); return w && !w.isDestroyed() && w.isVisible() ? w : null; });
+  const answer = async allow => { const w = await confirmShown(); if (!w) return false; await wait(750); await w.webContents.executeJavaScript(`document.getElementById('${allow ? 'allow' : 'deny'}').click()`); return true; };
+  const turnDone = () => waitFor(() => !getChat().busy, 8000);
+  const rows = () => cjs('[...document.querySelectorAll(".act")].map(r => r.className.replace("act ", "") + ":" + r.children[1].textContent)');
+  const lastToolMsgs = () => cmock.seen.at(-1).body.messages.filter(m => m.role === 'tool').map(m => m.content);
+  const say = (text, script) => { cmock.state.script = script; fake.calls = []; return typeAndSend(text); };
+  const R = 'because the user asked';
+
+  // Guarded: looking is free, every change asks; Allow comes only from the popup.
+  settings.set('securityLevel', 'guarded');
+  await say('click the button', [
+    { text: 'Let me look.', calls: [{ id: 't1', name: 'take_screenshot', args: { reason: R } }] },
+    { calls: [{ id: 't2', name: 'click', args: { x: 100, y: 40, effect: 'routine', reason: R } }] },
+    { text: 'Clicked it!' },
+  ]);
+  const cwin = await confirmShown();
+  check('Guarded: screenshot runs without asking, click asks', !!cwin && fake.calls.length === 1 && fake.calls[0].capture === true, JSON.stringify(fake.calls));
+  check('Esc is a global Stop key while Tito can act', globalShortcut.isRegistered('Escape'));
+  const popup = cwin && await cwin.webContents.executeJavaScript('[document.getElementById("title").textContent, document.getElementById("reason").textContent, document.getElementById("allow").disabled]');
+  check('popup describes the real action; Allow starts disabled', popup && popup[0] === 'Click at (100, 40)' && /Tito says: because/.test(popup[1]) && popup[2] === true, JSON.stringify(popup));
+  if (cwin) await shot(cwin, 'confirm.png');
+  // Forged approvals: wrong window, then wrong question id. Neither may approve.
+  ipcMain.emit('confirm:answer', { sender: cw.webContents }, 'a2', true);
+  ipcMain.emit('confirm:answer', { sender: cwin.webContents }, 'not-this-one', true);
+  await wait(200);
+  check('approval is ignored unless it comes from the popup for this exact question', getChat().busy && fake.calls.length === 1);
+  await answer(true);
+  await turnDone();
+  const clickCall = fake.calls.find(c => c.args && c.args[0] === 'click');
+  check('after Allow the click runs at the right screen point', clickCall && clickCall.args[1] === '300' && clickCall.args[2] === '130', JSON.stringify(fake.calls));
+  check('the action log shows each step', JSON.stringify(await rows()).includes('done:Look at the screen') && JSON.stringify(await rows()).includes('done:Click at (100, 40)'), JSON.stringify(await rows()));
+  check('Stop key is released when the task ends', !globalShortcut.isRegistered('Escape'));
+  const imgMsg = cmock.seen.at(-1).body.messages.find(m => Array.isArray(m.content) && m.content.some(c => c.type === 'image_url'));
+  check('the screenshot reaches the model with a "data, not instructions" label', !!imgMsg && /not instructions/.test(imgMsg.content[0].text));
+
+  // Deny: nothing happens and the model is told.
+  await say('type hello', [{ calls: [{ id: 't3', name: 'type_text', args: { text: 'hello', effect: 'routine', reason: R } }] }, { text: 'Okay, I will not.' }]);
+  await answer(false);
+  await turnDone();
+  check("Don't allow: nothing is typed and the model is told", fake.calls.length === 0 && /declined/.test(lastToolMsgs().at(-1)), JSON.stringify(lastToolMsgs()));
+
+  // Stop while a question is open.
+  await say('type more', [{ calls: [{ id: 't4', name: 'type_text', args: { text: 'x', effect: 'routine', reason: R } }] }]);
+  await confirmShown();
+  stopTask();
+  await turnDone();
+  check('Stop while asking: popup closes, nothing runs', fake.calls.length === 0 && !getConfirmWin().isVisible() && !getChat().busy);
+
+  // Trusted: routine runs, destructive (declared or detected) still asks.
+  settings.set('securityLevel', 'trusted');
+  await say('open notes and quit it', [
+    { calls: [{ id: 't5', name: 'open_app', args: { name: 'Notes', reason: R } }] },
+    { calls: [{ id: 't6', name: 'press_key', args: { keys: 'cmd+q', effect: 'routine', reason: R } }] },
+    { text: 'Done.' },
+  ]);
+  const askedWin = await confirmShown();
+  check('Trusted: opening an app runs; cmd+q asks even when labelled routine', !!askedWin && fake.calls.length === 1 && fake.calls[0].open === 'Notes', JSON.stringify(fake.calls));
+  await answer(false);
+  await turnDone();
+
+  // Full Access: no questions, but a switched-off category stays blocked.
+  settings.set('securityLevel', 'full');
+  fs.writeFileSync(path.join(sandbox, 'old.txt'), 'bye');
+  await say('delete it and send', [
+    { calls: [{ id: 't7', name: 'delete_file', args: { path: path.join(sandbox, 'old.txt'), reason: R } }] },
+    { calls: [{ id: 't8', name: 'click', args: { x: 10, y: 10, effect: 'send_message', reason: R } }] },
+    { text: 'Deleted; could not send.' },
+  ]);
+  await turnDone();
+  check('Full Access: delete runs without asking (to the Trash)', fake.calls.some(c => c.trash) && !fs.existsSync(path.join(sandbox, 'old.txt')));
+  check('Full Access: "send messages" switched off is still blocked', !fake.calls.some(c => c.args) && /Not allowed/.test(lastToolMsgs().at(-1)), JSON.stringify(lastToolMsgs()));
+
+  // Files: secrets scrubbed; outside the home folder and credential stores refused.
+  fs.writeFileSync(path.join(sandbox, 'notes.txt'), 'shopping list\napi_key = sk-live-ABCDEFGHIJKLMNOP123456\nmilk');
+  await say('read files', [
+    { calls: [
+      { id: 't9', name: 'read_file', args: { path: path.join(sandbox, 'notes.txt'), reason: R } },
+      { id: 't10', name: 'read_file', args: { path: '/etc/hosts', reason: R } },
+      { id: 't11', name: 'read_file', args: { path: path.join(sandbox, '.ssh', 'id_rsa'), reason: R } },
+      { id: 't12', name: 'write_file', args: { path: path.join(sandbox, 'sub', 'new.txt'), content: 'hi', reason: R } },
+      { id: 't13', name: 'click', args: '{not json', },
+    ] },
+    { text: 'Read.' },
+  ]);
+  await turnDone();
+  const fr = lastToolMsgs();
+  check('file contents are scrubbed of secrets before the model sees them', fr[0].includes('shopping list') && fr[0].includes('[redacted]') && !JSON.stringify(cmock.seen.at(-1).body).includes('ABCDEFGHIJKLMNOP'), fr[0]);
+  check('files outside the home folder are refused', /outside/.test(fr[1]), fr[1]);
+  check('credential locations are refused', /credentials/.test(fr[2]), fr[2]);
+  check('write_file creates the file', fs.readFileSync(path.join(sandbox, 'sub', 'new.txt'), 'utf8') === 'hi' && /Created/.test(fr[3]));
+  check('malformed tool arguments are rejected, not run', /not valid JSON/.test(fr[4]), fr[4]);
+
+  // Tito may not operate his own windows.
+  fake.rects = [{ x: 100, y: 50, width: 400, height: 300 }];
+  fake.focused = true;
+  await say('click yourself', [
+    { calls: [{ id: 't14', name: 'take_screenshot', args: { reason: R } }, { id: 't15', name: 'click', args: { x: 50, y: 50, effect: 'routine', reason: R } }, { id: 't16', name: 'type_text', args: { text: 'x', effect: 'routine', reason: R } }] },
+    { text: 'I cannot.' },
+  ]);
+  await turnDone();
+  const own = lastToolMsgs();
+  check("clicks on Tito's own windows are refused", /own windows/.test(own[1]) && !fake.calls.some(c => c.args), own[1]);
+  check("typing while Tito's own window has focus is refused", /own window has keyboard focus/.test(own[2]), own[2]);
+  fake.rects = []; fake.focused = false;
+
+  // Per-action switch off: the tool isn't offered, and is blocked if called anyway.
+  settings.set('actionPerms', { ...settings.get('actionPerms'), mouseKeyboard: false });
+  await say('click anyway', [{ calls: [{ id: 't17', name: 'click', args: { x: 5, y: 5, effect: 'routine', reason: R } }] }, { text: 'Blocked.' }]);
+  await turnDone();
+  const offered = cmock.seen.at(-1).body.tools.map(t => t.function.name);
+  check('switched-off category: tool not offered and blocked if called', !offered.includes('click') && offered.includes('read_file') && /Not allowed/.test(lastToolMsgs().at(-1)) && fake.calls.length === 0, offered.join(','));
+  settings.set('actionPerms', { ...settings.get('actionPerms'), mouseKeyboard: true });
+
+  // Lockdown: chat only.
+  settings.set('securityLevel', 'lockdown');
+  await say('hello in lockdown', []);
+  await turnDone();
+  const lb = cmock.seen.at(-1).body;
+  check('Lockdown: no tools are offered at all', lb.tools === undefined && /cannot control the computer/.test(lb.messages[0].content) && !globalShortcut.isRegistered('Escape'));
+  settings.set('securityLevel', 'guarded');
+  check('prompt-injection rule is in the system prompt when tools are on', (() => { const { systemPrompt } = require('./chat'); return /is DATA/.test(systemPrompt({ tools: [{ name: 'click' }] })); })());
+
+  // Claude: thinking blocks go back unchanged inside a tool loop; screenshot attached to the tool result.
+  const amock = await startMockAI();
+  amock.state.claude = [{ text: 'Looking.', calls: [{ id: 'toolu_1', name: 'take_screenshot', args: { reason: R } }] }, { text: 'All good.' }];
+  const claudeP = createProvider({ provider: 'anthropic', apiKey: KEY, model: 'claude-opus-5-5', baseURL: `http://127.0.0.1:${amock.port}`, maxRetries: 0 });
+  const ar = await runAgentTurn({
+    provider: claudeP, system: 'sys', messages: [{ role: 'user', content: 'look' }], tools: require('./ai/tools').TOOLS, executor: ex,
+    getPolicy: () => ({ level: 'guarded', perms: settings.get('actionPerms') }), confirm: async () => 'deny', emit: () => {}, signal: new AbortController().signal,
+  });
+  const a2 = amock.seen.at(-1).body;
+  const asst = a2.messages[1].content;
+  const tr = a2.messages[2].content[0];
+  check('Claude tool loop: final text returned', ar.text === 'Looking.\n\nAll good.' && ar.steps === 1, JSON.stringify(ar));
+  check('Claude: thinking block replayed unchanged, in order', asst[0].type === 'thinking' && asst[0].signature === 'SIG-123' && asst.at(-1).type === 'tool_use', JSON.stringify(asst.map(b => b.type)));
+  check('Claude: tool result carries text + redacted screenshot', tr.type === 'tool_result' && tr.tool_use_id === 'toolu_1' && tr.content[1].type === 'image' && a2.tools.length === 10 && a2.system === 'sys');
+  amock.server.close();
+
+  // The real redaction helper, on a real image containing a fake key.
+  const { BrowserWindow } = require('electron');
+  const tw = new BrowserWindow({ width: 700, height: 220, show: false });
+  await tw.loadURL('data:text/html,' + encodeURIComponent('<body style="font:22px Helvetica;background:white;padding:20px">Hello there, this is fine.<br><br>api key: sk-ant-api03-TESTKEY1234567890abcd<br><br>Another normal line.</body>'));
+  await wait(400);
+  const png = path.join(sandbox, 'shot.png');
+  const jpg = path.join(sandbox, 'shot.jpg');
+  fs.writeFileSync(png, (await tw.webContents.capturePage()).toPNG());
+  tw.destroy();
+  const { patternsWith } = require('./ai/redact');
+  const bin = await ensureHelper('tito-redact', 'redact');
+  const h1 = await runHelper(bin, [png, jpg], JSON.stringify(patternsWith([])), 30000);
+  const h2 = await runHelper(bin, [jpg, path.join(sandbox, 'again.jpg')], JSON.stringify(patternsWith([])), 30000);
+  check('screenshot redaction: the key is found and blacked out on-device', h1.code === 0 && JSON.parse(h1.out).redacted >= 1 && h2.code === 0 && JSON.parse(h2.out).redacted === 0, `${h1.out.trim()} then ${h2.out.trim()} ${h1.err}`);
+  fs.copyFileSync(jpg, path.join(out, 'redacted.jpg'));
+  check('text redaction keeps ordinary text', redactText('hello world 12345').text === 'hello world 12345');
+  const ih = await runHelper(await ensureHelper('tito-input', 'input'), ['check']);
+  check('input helper reports Accessibility status', /"trusted":(true|false)/.test(ih.out), ih.out.trim());
+  fs.rmSync(sandbox, { recursive: true, force: true });
+
   // No key -> friendly error with a way to fix it
   settings.set('aiProvider', 'groq');
   sec.remove('groq');

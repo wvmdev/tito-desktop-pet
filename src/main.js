@@ -1,7 +1,7 @@
 // Tito — main process.
 // Autonomous pet with personalities that walks on the desktop floor and on app windows,
 // click -> Settings/Chat popup, double-click -> size slider, drag & drop with falling.
-const { app, BrowserWindow, screen, ipcMain, protocol, net, Tray, Menu, nativeImage, powerMonitor, dialog, shell } = require('electron');
+const { app, BrowserWindow, screen, ipcMain, protocol, net, Tray, Menu, nativeImage, powerMonitor, dialog, shell, globalShortcut } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const { spawn, execFile } = require('child_process');
@@ -14,6 +14,9 @@ const { SecretStore } = require('./ai/secrets');
 const { createProvider, normalizeError, PROVIDERS, providerList } = require('./ai/providers');
 const { LEVELS, PERM_TOGGLES } = require('./ai/permissions');
 const { ChatSession } = require('./chat');
+const { availableTools } = require('./ai/tools');
+const { Executor } = require('./ai/executor');
+const { createMacBackend } = require('./ai/mac-backend');
 
 const ROOT = path.join(__dirname, '..');
 // Base window box at size 1. Sprites are normalised so Tito looks the same size in every
@@ -56,6 +59,9 @@ let mood = null;
 let secrets = null;
 let chat = null;
 let chatWin = null;
+let executor = null;
+let confirmWin = null;
+let pendingConfirm = null; // { id, resolve }
 
 const pageURL = name => `tito://app/src/renderer/${name}`;
 const petDims = size => ({ W: Math.round(BASE_W * size), H: Math.round(BASE_H * size) });
@@ -325,7 +331,12 @@ function registerIpc() {
     return { history: chat.history(), status: chatStatus() };
   });
   ipcMain.on('chat:send', (e, text) => { if (fromChat(e) && typeof text === 'string') chat.send(text); });
-  ipcMain.on('chat:stop', e => { if (fromChat(e)) chat.stop(); });
+  ipcMain.on('chat:stop', e => { if (fromChat(e)) stopTask(); });
+  // Approval can only come from the confirmation window itself, for the question now showing.
+  ipcMain.on('confirm:answer', (e, id, allow) => {
+    if (!confirmWin || e.sender !== confirmWin.webContents) return;
+    resolveConfirm(allow === true ? 'allow' : 'deny', id);
+  });
   ipcMain.handle('chat:clear', e => { if (!fromChat(e)) throw new Error('denied'); chat.clear(); });
   ipcMain.on('chat:open-settings', e => { if (fromChat(e)) openSettings(); });
 
@@ -441,18 +452,91 @@ function chatStatus() {
 }
 
 function startChat() {
+  // The Esc key the model itself presses must not trip our own global Stop shortcut.
+  const backend = createMacBackend({ getPetDisplayPoint: () => ({ x: Math.round(brain.footX()), y: Math.round(brain.footY()) }) });
+  const rawInput = backend.input;
+  backend.input = async (args, stdin) => {
+    const esc = args[0] === 'key' && /(^|\+)(esc|escape)$/.test(args[1] || '');
+    if (esc) globalShortcut.unregister('Escape');
+    try { return await rawInput(args, stdin); }
+    finally { if (esc && chat && chat.busy) setTimeout(() => { if (chat.busy) registerStopKey(); }, 250); }
+  };
+  executor = new Executor({ backend });
+
   chat = new ChatSession({
     getProvider: () => currentProvider(),
-    getSecretsForRedaction: () => [secrets.get(settings.get('aiProvider'))],
+    getSecrets: () => Object.keys(PROVIDERS).map(id => secrets.get(id)).filter(Boolean),
     normalizeError,
     getMood: () => mood && mood.summary(),
+    getTools: () => availableTools(settings.get('securityLevel'), settings.get('actionPerms')),
+    getPolicy: () => ({ level: settings.get('securityLevel'), perms: settings.get('actionPerms') }),
+    executor,
+    confirm: askUser,
+    // Esc stops Tito from anywhere, but only while a task that can act is running.
+    onTurnStart: hasTools => { if (hasTools) registerStopKey(); },
+    onTurnEnd: () => { globalShortcut.unregister('Escape'); resolveConfirm('deny'); },
   });
   const toWin = (ch, data) => { if (chatWin && !chatWin.isDestroyed()) chatWin.webContents.send(ch, data); };
   chat.on('start', () => brain && brain.setChatting(true));
   chat.on('delta', d => toWin('chat:delta', d));
+  chat.on('action', a => toWin('chat:action', a));
   chat.on('done', d => toWin('chat:done', d));
   chat.on('error', e => toWin('chat:error', e));
   chat.on('idle', () => { toWin('chat:idle'); if (brain) brain.setChatting(false); });
+}
+
+function registerStopKey() {
+  if (!globalShortcut.isRegistered('Escape')) globalShortcut.register('Escape', stopTask);
+}
+// Stop whatever Tito is doing right now (Esc, the Stop button, or closing the chat).
+function stopTask() {
+  if (chat) chat.stop();
+  resolveConfirm('deny');
+}
+
+// ---------- confirmation popup ----------
+// The only way an "ask" action gets approved: the user's own click on Allow in this window.
+// It is a non-activating panel, so answering it doesn't pull keyboard focus away from the app
+// Tito is working in.
+function ensureConfirmWin() {
+  if (confirmWin && !confirmWin.isDestroyed()) return confirmWin;
+  confirmWin = new BrowserWindow({
+    width: 360, height: 190, show: false,
+    ...(isMac ? { type: 'panel' } : {}),
+    transparent: true, frame: false, hasShadow: false, resizable: false, movable: true,
+    minimizable: false, maximizable: false, fullscreenable: false, skipTaskbar: true,
+    alwaysOnTop: true, acceptFirstMouse: true, focusable: false, backgroundColor: '#00000000',
+    webPreferences: secureWebPrefs(),
+  });
+  confirmWin.setAlwaysOnTop(true, 'screen-saver');
+  confirmWin.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+  confirmWin.loadURL(pageURL('confirm.html'));
+  confirmWin.on('closed', () => { confirmWin = null; resolveConfirm('deny'); });
+  return confirmWin;
+}
+
+function askUser(request) {
+  resolveConfirm('deny'); // never more than one question at a time
+  return new Promise(resolve => {
+    const win = ensureConfirmWin();
+    pendingConfirm = { id: request.id, resolve };
+    const a = screen.getDisplayNearestPoint({ x: Math.round(brain.footX()), y: Math.round(brain.footY()) }).workArea;
+    win.setPosition(a.x + a.width - 360 - 16, a.y + 16);
+    const show = () => {
+      if (!pendingConfirm || pendingConfirm.id !== request.id) return;
+      win.webContents.send('confirm:show', request);
+      win.showInactive();
+    };
+    if (win.webContents.isLoading()) win.webContents.once('did-finish-load', show); else show();
+  });
+}
+
+function resolveConfirm(answer, id) {
+  const p = pendingConfirm;
+  if (!p || (id !== undefined && id !== p.id)) return;
+  pendingConfirm = null;
+  if (confirmWin && !confirmWin.isDestroyed()) confirmWin.hide();
+  p.resolve(answer === 'allow' ? 'allow' : 'deny');
 }
 
 function openChat() {
@@ -527,6 +611,7 @@ app.whenReady().then(() => {
   secrets = new SecretStore();
   settings.on('change', (key, value) => {
     if (key === 'personality' && brain) brain.setPersonality(value);
+    if (key === 'securityLevel' && value === 'lockdown' && chat && chat.busy) stopTask();
     if (['aiProvider', 'aiModels'].includes(key) && chatWin && !chatWin.isDestroyed()) chatWin.webContents.send('chat:status', chatStatus());
     if (settingsWin && !settingsWin.isDestroyed() && key !== 'size') settingsWin.webContents.send('settings:changed', settings.all());
     if (key === 'size') applySize(value);
@@ -550,6 +635,7 @@ app.whenReady().then(() => {
     require('./smoke').run({
       app, petWin, brain, settings, openSettings, openPopup, checkActivity, getMood: () => mood,
       getSecrets: () => secrets, testConnection, openChat, getChatWin: () => chatWin, getChat: () => chat,
+      getExecutor: () => executor, getConfirmWin: () => confirmWin, stopTask,
       getPopup: () => ({ win: popupWin, kind: popupKind }), getSettingsWin: () => settingsWin,
     }).catch(e => { console.log('SMOKE ERROR', e && e.stack); app.exit(3); });
   }
@@ -570,5 +656,5 @@ app.whenReady().then(() => {
   }
 });
 
-app.on('will-quit', () => { if (windowFeed) windowFeed.kill(); if (settings) settings.flush(); });
+app.on('will-quit', () => { globalShortcut.unregisterAll(); if (windowFeed) windowFeed.kill(); if (settings) settings.flush(); });
 app.on('window-all-closed', () => app.quit());

@@ -33,6 +33,7 @@ contextBridge.exposeInMainWorld('tito', {
     onDelta: cb => ipcRenderer.on('chat:delta', (_e, d) => cb(d)),
     onDone: cb => ipcRenderer.on('chat:done', (_e, d) => cb(d)),
     onError: cb => ipcRenderer.on('chat:error', (_e, d) => cb(d)),
+    onAction: cb => ipcRenderer.on('chat:action', (_e, a) => cb(a)),
     onIdle: cb => ipcRenderer.on('chat:idle', () => cb()),
     onStatus: cb => ipcRenderer.on('chat:status', (_e, s) => cb(s)),
   },
@@ -40,6 +41,10 @@ contextBridge.exposeInMainWorld('tito', {
     get: () => ipcRenderer.invoke('size:get'),
     set: value => ipcRenderer.send('size:set', value),
     close: () => ipcRenderer.send('size:close'),
+  },
+  confirm: {
+    onShow: cb => ipcRenderer.on('confirm:show', (_e, r) => cb(r)),
+    answer: (id, allow) => ipcRenderer.send('confirm:answer', id, allow === true),
   },
   settings: {
     get: () => ipcRenderer.invoke('settings:get'),

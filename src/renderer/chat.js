@@ -54,6 +54,34 @@ function bubble(role, text, meta) {
   return el;
 }
 
+// ---------- action log: every tool call Tito makes is shown as it happens ----------
+const STATUS_TEXT = { asking: 'waiting for your OK', running: 'working…', done: '', denied: 'not allowed by you', blocked: 'blocked by your settings', error: 'failed' };
+const actionRows = new Map();
+function actionRow(a) {
+  log.querySelector('.empty')?.remove();
+  let row = actionRows.get(a.id);
+  if (!row) {
+    row = document.createElement('div');
+    row.append(Object.assign(document.createElement('span'), { className: 'dot' }),
+      Object.assign(document.createElement('span'), { className: 'what' }),
+      Object.assign(document.createElement('span'), { className: 'more' }));
+    actionRows.set(a.id, row);
+    log.append(row);
+  }
+  row.className = `act ${a.status}`;
+  row.children[1].textContent = a.title || 'Action';
+  const bits = [STATUS_TEXT[a.status] || '', a.detail || '', ['error', 'blocked'].includes(a.status) ? (a.note || '') : ''].filter(Boolean);
+  row.children[2].textContent = bits.join(' · ');
+  log.scrollTop = log.scrollHeight;
+}
+// Close the bubble being streamed so what comes next appears below it, in order.
+function endLive() {
+  if (!live) return;
+  if (liveText) live.classList.remove('typing'); else live.remove();
+  live = null;
+  liveText = '';
+}
+
 function showError(e, retryText) {
   const box = document.createElement('div');
   box.className = 'err';
@@ -63,7 +91,7 @@ function showError(e, retryText) {
     b.addEventListener('click', () => api.openSettings());
     box.append(b);
   }
-  if (retryText && !['no_key', 'config', 'refused'].includes(e.code)) {
+  if (retryText && !e.kept && !['no_key', 'config', 'refused'].includes(e.code)) {
     const b = Object.assign(document.createElement('button'), { className: 'btn', textContent: 'Retry' });
     b.addEventListener('click', () => { box.remove(); log.lastElementChild?.classList.contains('user') && log.lastElementChild.remove(); send(retryText); });
     box.append(b);
@@ -76,7 +104,7 @@ function emptyState() {
   const d = document.createElement('div');
   d.className = 'empty';
   const img = Object.assign(document.createElement('img'), { src: '../../assets/sprites/saludando/saludando_0.png', alt: '' });
-  d.append(img, document.createTextNode('Hi! Ask me anything. I can chat now; helping with your computer is coming soon.'));
+  d.append(img, document.createTextNode('Hi! Ask me anything, or ask me to do something on your Mac. I will ask before I change anything.'));
   log.append(d);
 }
 
@@ -104,17 +132,25 @@ function send(text) {
 }
 
 api.onDelta(d => {
-  if (!live) return;
+  if (!busy) return;
+  if (!live) { live = bubble('assistant', ''); live.classList.add('typing'); liveText = ''; }
   liveText += d;
   render(live.firstChild, liveText);
   log.scrollTop = log.scrollHeight;
 });
-api.onDone(({ text, stopped }) => {
-  if (live) { render(live.firstChild, text); live.classList.remove('typing'); if (stopped) live.append(Object.assign(document.createElement('span'), { className: 'meta', textContent: 'Stopped' })); }
-  live = null;
+api.onAction(a => { endLive(); actionRow(a); });
+api.onDone(({ stopped }) => {
+  if (stopped) {
+    if (!live) { live = bubble('assistant', ''); liveText = ''; }
+    liveText += '…';
+    render(live.firstChild, liveText);
+    live.append(Object.assign(document.createElement('span'), { className: 'meta', textContent: 'Stopped' }));
+    for (const row of actionRows.values()) if (/\b(asking|running)\b/.test(row.className)) { row.className = 'act denied'; row.children[2].textContent = 'stopped'; }
+  }
+  endLive();
 });
 api.onError(e => {
-  if (live) { live.remove(); live = null; }
+  endLive();
   if (e.code !== 'aborted') showError(e, lastSent);
 });
 api.onIdle(() => { setBusy(false); input.focus(); });
@@ -130,6 +166,8 @@ sendBtn.addEventListener('click', () => (busy ? api.stop() : send()));
 window.addEventListener('keydown', e => { if (e.key === 'Escape' && busy) { e.preventDefault(); api.stop(); } });
 document.getElementById('newChat').addEventListener('click', async () => {
   await api.clear();
+  live = null; liveText = '';
+  actionRows.clear();
   log.replaceChildren();
   emptyState();
   input.focus();
@@ -139,7 +177,10 @@ document.getElementById('newChat').addEventListener('click', async () => {
   const { history, status } = await api.get();
   document.getElementById('sub').textContent = status;
   if (!history.length) emptyState();
-  for (const m of history) bubble(m.role, m.content, m.stopped ? 'Stopped' : '');
+  for (const m of history) {
+    if (m.role === 'action') actionRow({ ...m, id: `old-${m.turn}-${m.id}`, status: ['asking', 'running'].includes(m.status) ? 'denied' : m.status });
+    else bubble(m.role, m.content, m.stopped ? 'Stopped' : '');
+  }
   setBusy(false);
   input.focus();
 })();
