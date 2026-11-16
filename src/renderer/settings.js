@@ -68,6 +68,12 @@ async function init() {
     ul.replaceChildren(...m.reasons.map(r => Object.assign(document.createElement('li'), { textContent: r })));
     if (m.battery) ul.append(Object.assign(document.createElement('li'), { textContent: `Battery ${m.battery.percent}%${m.battery.charging ? ' ⚡' : ''}` }));
     document.getElementById('weatherWarn').textContent = m.weatherError || '';
+    const loc = m.location;
+    document.getElementById('locLine').textContent = !loc
+      ? 'Leave empty to guess from your IP address.'
+      : loc.source === 'city'
+        ? `Using ${loc.place}.`
+        : `Guessed from your IP: ${loc.place} (${loc.agreement.replace('/', ' of ')} services agree). Wrong? Type your city.`;
   };
   showMood(mood);
   api.onMood(showMood);

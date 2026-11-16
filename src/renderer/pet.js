@@ -20,6 +20,9 @@ api.onPlay(({ name, facing, speed, frames, loop }) => {
   player.play(name, { facing, frames, loop: loop !== false });
 });
 api.onSize(s => { userSize = s; applySize(); });
+// Window clamped below the menu bar: draw Tito higher inside it so his feet stay where they belong.
+const stage = document.getElementById('stage');
+api.onLift(px => { stage.style.bottom = `${px}px`; stage.style.top = `${-px}px`; });
 
 // ---------- pixel hit-testing (alpha masks, 1/4 resolution, cached per frame) ----------
 const DS = 4;

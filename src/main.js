@@ -95,7 +95,7 @@ function createPetWindow() {
     width: W,
     height: H,
     size,
-    setPosition: (x, y) => petWin && !petWin.isDestroyed() && petWin.setPosition(x, y),
+    setPosition: placePet,
     play: anim => petWin && !petWin.isDestroyed() && petWin.webContents.send('pet:play', anim),
     personality: settings.get('personality'),
   });
@@ -109,13 +109,26 @@ function createPetWindow() {
   if (process.env.TITO_STAY) brain.setStay('sentado'); // dev: sit still for input testing
 }
 
+// macOS keeps windows below the menu bar. When Tito stands high up (e.g. on a window whose top is
+// near the menu bar) his window would need to start above it, so instead the window stops at the
+// menu bar and the sprite is drawn higher inside it ("lift"). The window's top part is empty anyway.
+let lastLift = 0;
+function placePet(x, y) {
+  if (!petWin || petWin.isDestroyed()) return;
+  const b = petWin.getBounds();
+  const a = screen.getDisplayNearestPoint({ x: Math.round(x + b.width / 2), y: Math.round(y + b.height) }).workArea;
+  const lift = y < a.y ? Math.round(a.y - y) : 0;
+  petWin.setPosition(x, y + lift);
+  if (lift !== lastLift) { lastLift = lift; petWin.webContents.send('pet:lift', lift); }
+}
+
 function applySize(size) {
   if (!petWin || !brain) return;
   const { W, H } = petDims(size);
   const nx = Math.round(brain.x + (brain.W - W) / 2);
   const ny = Math.round(brain.y + brain.H - H);
-  petWin.setBounds({ x: nx, y: ny, width: W, height: H });
-  brain.setDims(W, H, size);
+  petWin.setSize(W, H);
+  brain.setDims(W, H, size); // re-places the window (with lift) keeping his feet planted
   petWin.webContents.send('pet:size', size);
 }
 
@@ -232,9 +245,9 @@ function openPopup(kind) {
   const b = petWin.getBounds();
   const a = screen.getDisplayMatching(b).workArea;
   const size = settings.get('size');
-  // Just above Tito's head (sitting sprite is ~130px tall at size 1, bottom-anchored).
-  let x = Math.round(b.x + b.width / 2 - spec.w / 2);
-  let y = Math.round(b.y + b.height - 130 * size - spec.h);
+  // Just above Tito's head (sitting sprite is ~130px tall at size 1; feet at brain.footY()).
+  let x = Math.round(brain.footX() - spec.w / 2);
+  let y = Math.round(brain.footY() - 130 * size - spec.h);
   x = Math.min(a.x + a.width - spec.w, Math.max(a.x, x));
   y = Math.min(a.y + a.height - spec.h, Math.max(a.y, y));
 

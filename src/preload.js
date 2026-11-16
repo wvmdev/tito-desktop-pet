@@ -13,6 +13,7 @@ contextBridge.exposeInMainWorld('tito', {
     dragEnd: () => ipcRenderer.send('pet:drag-end'),
     onPlay: cb => ipcRenderer.on('pet:play', (_e, anim) => cb(anim)),
     onSize: cb => ipcRenderer.on('pet:size', (_e, s) => cb(s)),
+    onLift: cb => ipcRenderer.on('pet:lift', (_e, px) => cb(px)),
     // Main polls the real cursor and asks whether that point is over Tito's body.
     onHover: cb => ipcRenderer.on('pet:hover', (_e, p) => cb(p)),
   },

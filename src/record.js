@@ -93,7 +93,7 @@ window.done = (async () => {
     g.save(); g.beginPath(); g.rect(ox, oy, tw, th); g.clip();
     g.fillStyle = '#9db0c4'; g.fillRect(ox, oy + 18, tw, th - 18);
     g.fillStyle = '#5a6b7d'; g.fillRect(ox, oy + th - 3, tw, 3); // ground line (work-area bottom)
-    for (const w of windows) { // stand-in app windows: title bar + body
+    for (const w of [...windows].reverse()) { // stand-in app windows (list is front-to-back, so draw back first)
       const wx = ox + (w.x - wa.x) * SCALE, wy = oy + 18 + (w.y - top) * SCALE;
       g.fillStyle = '#f4f5f7'; g.fillRect(wx, wy, w.w * SCALE, w.h * SCALE);
       g.fillStyle = '#d5d9df'; g.fillRect(wx, wy, w.w * SCALE, 7);

@@ -22,6 +22,7 @@ const MAX_FALL = 2200;
 const EDGE_MARGIN = 60;  // window may overhang the screen edge (sprite is centred in it)
 const LEDGE_INSET = 28;  // keep Tito's feet this far inside a window's top edge
 const SNAP_UP = 40;      // dropped this close below a window top -> stand on it
+const HEADROOM = 135;    // px above a window top needed for Tito's body (sitting height at size 1)
 
 // Animation playback rates chosen so feet roughly match ground speed.
 const WALK_ANIM = 2.2;
@@ -105,7 +106,7 @@ class Brain extends EventEmitter {
     if (idx < 0) return false;
     if (px < w.x + LEDGE_INSET || px > w.x + w.w - LEDGE_INSET) return false;
     const a = screen.getDisplayNearestPoint({ x: Math.round(px), y: Math.round(w.y) }).workArea;
-    if (w.y < a.y + this.H * 0.6 || w.y > a.y + a.height - 20) return false; // no headroom / below floor
+    if (w.y < a.y + HEADROOM * this.size || w.y > a.y + a.height - 20) return false; // no headroom / below floor
     return !this._occluded(idx, px, w.y);
   }
   // Top of the surface Tito currently stands on.
@@ -229,7 +230,7 @@ class Brain extends EventEmitter {
     return !w || !this._standable(w, this.footX());
   }
 
-  _travelTo(target, { mode, anim, animSpeed, speed, onArrive, info = {} }) {
+  _travelTo(target, { mode, anim, animSpeed, speed, onArrive, info = {}, ignoreWindow = null }) {
     this._clear();
     const dir = Math.sign(target - this.x) || 1;
     this.facing = dir < 0 ? 'left' : 'right';
@@ -241,7 +242,7 @@ class Brain extends EventEmitter {
       this.x += dir * speed * dt;
       const arrived = (target - this.x) * dir <= 0;
       if (arrived) this.x = target;
-      const wall = this._wallCrossed(fx0, this.footX());
+      const wall = this._wallCrossed(fx0, this.footX(), ignoreWindow);
       if (wall) { this._hitWall(wall, dir, { mode, anim, animSpeed, speed }); return; }
       if (this._lostFooting()) { this._commit(); this._fall(); return; }
       this._commit();
@@ -328,25 +329,31 @@ class Brain extends EventEmitter {
   }
 
   // ---------- windows in the way: climb them or turn back ----------
-  // The side of a window counts as a wall when the window overlaps Tito's body height and that
-  // part of its side isn't hidden behind another window. Returns the nearest side crossed while
-  // the feet moved from fx0 to fx1.
-  _wallCrossed(fx0, fx1) {
+  // Any vertical window edge Tito reaches counts as a wall — coming from outside the window or
+  // walking in front of it (windows often reach down behind the Dock, so he's usually in front of
+  // one). An edge counts when the window overlaps his body height there and that part of the edge
+  // isn't hidden behind another window. Returns the nearest edge crossed as the feet moved fx0->fx1.
+  _wallCrossed(fx0, fx1, ignoreId = null) {
     if (fx0 === fx1) return null;
     const fy = this.footY();
-    const bandTop = fy - 70 * this.size;
+    const bandTop = fy - 110 * this.size; // roughly his body height
     const bandBot = fy - 6;
+    const a = this.area();
+    const right = fx1 > fx0;
     let best = null;
     this.windows.forEach((w, i) => {
       if (this.surface.kind === 'window' && w.id === this.surface.id) return;
+      if (w.id === ignoreId) return;
       if (w.y > bandBot || w.y + w.h < bandTop) return;
-      const side = fx1 > fx0 ? 'left' : 'right'; // moving right meets a left side, and vice versa
-      const sx = side === 'left' ? w.x : w.x + w.w;
-      const crossed = fx1 > fx0 ? fx0 < sx && fx1 >= sx : fx0 > sx && fx1 <= sx;
-      if (!crossed) return;
-      const py = Math.min(w.y + w.h - 1, Math.max(w.y + 1, fy - 30 * this.size));
-      if (this._occluded(i, side === 'left' ? sx + 1 : sx - 1, py)) return;
-      if (!best || Math.abs(sx - fx0) < Math.abs(best.sx - fx0)) best = { w, side, sx };
+      for (const side of ['left', 'right']) {
+        const sx = side === 'left' ? w.x : w.x + w.w;
+        if (sx < a.x + 20 || sx > a.x + a.width - 20) continue; // edge off-screen
+        const crossed = right ? fx0 < sx && fx1 >= sx : fx0 > sx && fx1 <= sx;
+        if (!crossed) continue;
+        const py = Math.min(w.y + w.h - 1, Math.max(w.y + 1, fy - 40 * this.size));
+        if (this._occluded(i, side === 'left' ? sx + 1 : sx - 1, py)) continue;
+        if (!best || Math.abs(sx - fx0) < Math.abs(best.sx - fx0)) best = { w, side, sx };
+      }
     });
     return best;
   }
@@ -354,7 +361,7 @@ class Brain extends EventEmitter {
   // Bumped into a window: climb it (personality-dependent) or look up at it and go back.
   _hitWall(wall, dir, travel = null) {
     this._clear();
-    this.x = wall.sx - dir * 16 * this.size - this.W / 2;
+    this.x = wall.sx - dir * 16 * this.size - this.W / 2; // just short of the edge, whichever side
     this.y = this.standY();
     this._commit();
     const t = this._climbInfo(wall.w, wall.side);
@@ -381,11 +388,16 @@ class Brain extends EventEmitter {
   // Can Tito climb this side of window w and stand on top? Returns a climb target or null.
   _climbInfo(w, side) {
     const a = this.area();
-    if (w.y < a.y + this.H || w.y > this.floorTop() - 120) return null; // too high / too low
+    if (w.y < a.y + HEADROOM * this.size || w.y > this.floorTop() - 120) return null; // too high / too low
     const sx = side === 'left' ? w.x : w.x + w.w;
     if (sx < a.x + 40 || sx > a.x + a.width - 40) return null;
     const landX = side === 'left' ? w.x + LEDGE_INSET + 20 : w.x + w.w - LEDGE_INSET - 20;
     if (!this._standable(w, landX)) return null;
+    // The edge he climbs must actually be visible: not hidden behind a window in front of it.
+    const idx = this.windows.indexOf(w);
+    const edgeX = side === 'left' ? sx + 1 : sx - 1;
+    const bottom = Math.min(w.y + w.h, this.floorTop()) - 4;
+    for (let y = w.y + 4; y <= bottom; y += 30) if (this._occluded(idx, edgeX, y)) return null;
     return { w, side, sx, landX };
   }
 
@@ -395,7 +407,6 @@ class Brain extends EventEmitter {
     const fx = this.footX();
     const options = [];
     for (const w of this.windows) {
-      if (w.y < a.y + this.H || w.y > this.floorTop() - 120) continue;  // too high / too low
       if (w.x + w.w < a.x || w.x > a.x + a.width) continue;
       for (const side of ['left', 'right']) {
         const t = this._climbInfo(w, side);
@@ -416,6 +427,7 @@ class Brain extends EventEmitter {
     this._travelTo(startFoot - this.W / 2, {
       mode: 'walk', anim: 'caminando', animSpeed: WALK_ANIM * s, speed: WALK_SPEED * s * this.size,
       info: { toClimb: t.w.id },
+      ignoreWindow: t.w.id,
       onArrive: () => this._climbUp(t),
     });
   }

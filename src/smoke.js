@@ -198,6 +198,13 @@ async function run({ app, petWin, brain, settings, openSettings, getPopup, getSe
   }
   check('climbs up (escalando) and ends on the window top', sawClimb && brain.surface.kind === 'window', `surface=${brain.surface.kind}`);
 
+  // A window edge hidden behind a window in front is not climbable.
+  const front = { id: 11, pid: 95, x: wa.x + 200, y: wa.y + 200, w: 700, h: 600 };
+  const back = { id: 12, pid: 94, x: wa.x + 300, y: wa.y + 195, w: 300, h: 600 };
+  brain.setWindows([front, back]);
+  check('edges hidden behind a front window are not climbable', !brain._climbInfo(back, 'left') && !brain._climbInfo(back, 'right') && !!brain._climbInfo(front, 'left'));
+  brain.setWindows([]);
+
   // ---- teleport ----
   await settle();
   brain.teleport();
@@ -236,6 +243,34 @@ async function run({ app, petWin, brain, settings, openSettings, getPopup, getSe
       await wait(1300);
       check(`walking into a window: ${label}`, looked && !crossed && brain.facing === 'left' && brain.footX() < wall.x,
         `mode=${brain.mode} facing=${brain.facing} foot=${Math.round(brain.footX())} wall=${wall.x}`);
+    }
+  }
+  // In front of a big window that reaches down behind the Dock (the usual real layout):
+  // reaching its edge from inside also means climb or turn.
+  const big = { id: 8, pid: 96, x: wa.x + 60, y: wa.y + 160, w: 900, h: wa.height + 100 };
+  for (const [label, r] of [['climbs it', 0], ['turns back', 0.99]]) {
+    brain.setWindows([big]);
+    await settle();
+    brain.surface = { kind: 'ground' };
+    brain.facing = 'right';
+    brain.x = big.x + big.w - 200 - brain.W / 2; brain.y = brain.standY(); brain._commit();
+    Math.random = () => r;
+    brain._travelTo(big.x + big.w + 200 - brain.W / 2, { mode: 'run', anim: 'corriendo', animSpeed: 3.5, speed: 400 });
+    await wait(800);
+    Math.random = realRandom;
+    if (r === 0) {
+      for (let i = 0; i < 60 && brain.surface.kind !== 'window'; i++) await wait(100);
+      const b = petWin.getBounds();
+      const lift = await js('parseFloat(document.getElementById("stage").style.bottom || "0")');
+      check(`in front of a window, reaching its edge: ${label}`, brain.surface.kind === 'window' && brain.surface.id === 8,
+        `mode=${brain.mode} surface=${brain.surface.kind}`);
+      check('stands on a window near the menu bar (sprite lifted, window below menu bar)',
+        Math.abs(brain.footY() - big.y) < 1 && b.y >= wa.y && Math.abs(b.y + b.height - lift - big.y) < 2,
+        `foot=${brain.footY()} top=${big.y} winY=${b.y} lift=${lift}`);
+    } else {
+      await wait(1300);
+      check(`in front of a window, reaching its edge: ${label}`, brain.facing === 'left' && brain.footX() < big.x + big.w,
+        `facing=${brain.facing} foot=${Math.round(brain.footX())} edge=${big.x + big.w}`);
     }
   }
   brain.setWindows([]);

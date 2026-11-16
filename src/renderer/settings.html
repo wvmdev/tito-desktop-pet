@@ -136,7 +136,7 @@
       <div class="field glass">
         <div class="text">
           <div class="title" id="weatherTitle">Weather affects mood</div>
-          <div class="sub">Uses your approximate location from your IP address (ipwho.is) and Open-Meteo, or the city below.</div>
+          <div class="sub">Weather from Open-Meteo for the city below, or a location guessed from your IP address (ipwho.is, geojs.io, ipinfo.io).</div>
         </div>
         <span class="switch">
           <input type="checkbox" id="weather" role="switch" aria-labelledby="weatherTitle">
@@ -146,7 +146,7 @@
       <div class="field glass">
         <div class="text">
           <label class="title" for="city">City</label>
-          <div class="sub">Leave empty to use your approximate location.</div>
+          <div class="sub" id="locLine">Leave empty to guess from your IP address.</div>
         </div>
         <input type="text" id="city" placeholder="e.g. Brussels" maxlength="80" autocomplete="off" spellcheck="false">
       </div>
