@@ -81,7 +81,7 @@ function createMacBackend({ getPetDisplayPoint }) {
       const outFile = path.join(dir, 'out.jpg');
       try {
         fs.writeFileSync(inFile, src.thumbnail.toPNG(), { mode: 0o600 });
-        const r = await runHelper(bin, [inFile, outFile], JSON.stringify(patternsWith(secrets)), 30000);
+        const r = await runHelper(bin, [inFile, outFile], JSON.stringify(patternsWith(secrets)), 60000);
         if (r.code !== 0) throw new Error('Could not check the screenshot for secrets, so it was not sent.');
         const redacted = (JSON.parse(r.out || '{}').redacted) || 0;
         return {

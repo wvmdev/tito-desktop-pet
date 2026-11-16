@@ -26,6 +26,7 @@ const SENSITIVE = [
 class Executor {
   constructor({ backend, roots = [os.homedir()], tasks = null }) {
     this.backend = backend;
+    this.openSettleMs = 900;
     this.tasks = tasks; // TaskScheduler, for the schedule_task / list_tasks / cancel_task tools
     this.roots = roots.map(r => fs.realpathSync(r));
     this.shot = null; // geometry of the latest screenshot, for mapping click coordinates
@@ -105,7 +106,10 @@ class Executor {
           const app = input.name.trim();
           if (!/^[\w .&+\-']{1,80}$/.test(app)) throw new Error('That does not look like an app name.');
           await this.backend.openApp(app);
-          return { text: `Opened ${app}.` };
+          // Give the app a moment to come to the front, so what is typed next lands in it and not in
+          // whatever was in front before.
+          await new Promise(r => setTimeout(r, this.openSettleMs));
+          return { text: `Opened ${app}. Wait for it to appear before typing (take a screenshot or just continue).` };
         }
         case 'read_file': {
           const p = this._resolve(input.path);

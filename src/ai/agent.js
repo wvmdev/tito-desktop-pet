@@ -140,7 +140,7 @@ async function runAgentTurn({ provider, system, messages, tools, executor, getPo
         if (signal.aborted) throw abortError();
         if (answer !== 'allow') {
           emit('action', { id, ...d, status: 'denied' });
-          results.push({ ...base, text: 'The user declined this action. Do not retry it; ask what they would like instead.', isError: true });
+          results.push({ ...base, text: 'The user declined this action (they pressed "Don\'t allow"). It was NOT done. Do not retry it; tell them it was not done and ask what they would like instead.', isError: true });
           continue;
         }
       }

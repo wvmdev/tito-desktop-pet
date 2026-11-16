@@ -50,7 +50,7 @@ const TOOLS = [
     schema: { type: 'object', properties: { path: { type: 'string' }, reason },
       required: ['path', 'reason'], additionalProperties: false } },
   { name: 'write_file', toggle: 'fileWrite',
-    description: 'Create or overwrite a text file inside the user\'s home folder.',
+    description: 'Create or overwrite a text file inside the user\'s home folder. Missing folders on the way are created.',
     schema: { type: 'object', properties: { path: { type: 'string' }, content: { type: 'string' }, reason },
       required: ['path', 'content', 'reason'], additionalProperties: false } },
   { name: 'delete_file', toggle: 'fileWrite',

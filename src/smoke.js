@@ -683,6 +683,7 @@ async function run({ app, petWin, brain, settings, openSettings, getPopup, getSe
     async trash(f) { this.calls.push({ trash: f }); fs.rmSync(f, { recursive: true }); },
   };
   ex.backend = fake;
+  ex.openSettleMs = 0;
   ex.roots = [sandbox];
   const waitFor = async (fn, ms = 5000) => { const t = Date.now(); while (Date.now() - t < ms) { const v = await fn(); if (v) return v; await wait(40); } return null; };
   const confirmShown = () => waitFor(() => { const w = getConfirmWin(); return w && !w.isDestroyed() && w.isVisible() ? w : null; });
@@ -776,6 +777,9 @@ async function run({ app, petWin, brain, settings, openSettings, getPopup, getSe
   check('credential locations are refused', /credentials/.test(fr[2]), fr[2]);
   check('write_file creates the file', fs.readFileSync(path.join(sandbox, 'sub', 'new.txt'), 'utf8') === 'hi' && /Created/.test(fr[3]));
   check('malformed tool arguments are rejected, not run', /not valid JSON/.test(fr[4]), fr[4]);
+
+  const rootDel = await ex.run('delete_file', { path: sandbox });
+  check('the home folder itself can never be deleted', rootDel.isError && /home folder/.test(rootDel.text) && !fake.calls.some(c => c.trash === sandbox), rootDel.text);
 
   // Tito may not operate his own windows.
   fake.rects = [{ x: 100, y: 50, width: 400, height: 300 }];
