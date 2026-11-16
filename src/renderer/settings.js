@@ -111,11 +111,14 @@ async function init() {
     const pi = info(p);
     $('provider').value = p;
     $('model').value = (settings.aiModels || {})[p] || '';
-    $('model').placeholder = pi.suggestions.length ? '' : 'Press "Load models" or type a model id';
+    $('model').placeholder = pi.suggestions.length ? '' : 'Load models, or type one';
     const options = [...new Set([...(pi.suggestions || []), ...(loaded[p] || [])])];
     $('modelList').replaceChildren(...options.map(m => Object.assign(document.createElement('option'), { value: m })));
-    $('baseRow').hidden = !pi.custom;
-    $('baseURL').value = settings.customBaseURL || '';
+    // Presets come with their address filled in (read-only); only Custom is typed by hand.
+    $('baseURL').readOnly = !pi.custom;
+    $('baseURL').value = pi.custom ? (settings.customBaseURL || '') : pi.baseURL;
+    $('baseURL').title = pi.custom ? '' : 'Built-in address for this provider';
+    $('builtin').hidden = pi.custom;
     $('keyPage').hidden = !pi.hasKeyPage;
     // Local servers need no key.
     $('localNote').hidden = !pi.local;
@@ -137,6 +140,7 @@ async function init() {
     catch { setResult('bad', 'That model name has unsupported characters.'); }
   });
   $('baseURL').addEventListener('change', async () => {
+    if (!info(provider()).custom) return;
     try { Object.assign(settings, await api.set('customBaseURL', $('baseURL').value)); setResult('', ''); }
     catch { setResult('bad', 'Use an https:// address (http:// only for localhost).'); }
   });

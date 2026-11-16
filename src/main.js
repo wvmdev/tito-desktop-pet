@@ -28,7 +28,7 @@ protocol.registerSchemesAsPrivileged([
 ]);
 
 // Dev runs (smoke test / recorder) use a throwaway profile so they never touch real settings.
-if (process.env.TITO_SMOKE || process.env.TITO_RECORD) {
+if (process.env.TITO_SMOKE || process.env.TITO_RECORD || process.env.TITO_SHOT) {
   app.setPath('userData', path.join(require('os').tmpdir(), `tito-dev-${process.pid}`));
 }
 
@@ -474,6 +474,20 @@ app.whenReady().then(() => {
     }).catch(e => { console.log('SMOKE ERROR', e && e.stack); app.exit(3); });
   }
   if (process.env.TITO_RECORD) require('./record').run({ app, petWin, brain });
+  // Dev: TITO_SHOT=<dir> [TITO_SHOT_PROVIDERS=groq,custom,...] screenshots the AI section of Settings.
+  if (process.env.TITO_SHOT) {
+    openSettings();
+    setTimeout(async () => {
+      const ids = (process.env.TITO_SHOT_PROVIDERS || 'groq').split(',');
+      const wc = settingsWin.webContents;
+      for (const id of ids) {
+        await wc.executeJavaScript(`(() => { const s = document.getElementById('provider'); s.value = ${JSON.stringify(id)}; s.dispatchEvent(new Event('change')); s.scrollIntoView({ block: 'start' }); window.scrollBy(0, -60); })()`);
+        await new Promise(r => setTimeout(r, 500));
+        require('fs').writeFileSync(path.join(process.env.TITO_SHOT, `ai-${id}.png`), (await wc.capturePage()).toPNG());
+      }
+      app.exit(0);
+    }, 2000);
+  }
 });
 
 app.on('will-quit', () => { if (windowFeed) windowFeed.kill(); });

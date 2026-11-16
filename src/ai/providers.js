@@ -45,7 +45,9 @@ const MODEL_SUGGESTIONS = Object.fromEntries(PROVIDER_IDS.map(id => [id, PROVIDE
 // What Settings needs to draw the picker (no secrets).
 const providerList = () => PROVIDER_IDS.map(id => {
   const p = PROVIDERS[id];
-  return { id, label: p.label, local: !!p.local, custom: !!p.custom, hasKeyPage: !!p.keyPage, suggestions: p.suggestions || [] };
+  // OpenAI/Claude use their SDK's standard address; shown so every preset has a visible URL.
+  const shownURL = p.baseURL || (p.kind === 'anthropic' ? 'https://api.anthropic.com' : id === 'openai' ? 'https://api.openai.com/v1' : '');
+  return { id, label: p.label, local: !!p.local, custom: !!p.custom, hasKeyPage: !!p.keyPage, suggestions: p.suggestions || [], baseURL: shownURL };
 });
 
 const REQUEST_TIMEOUT_MS = 120000;

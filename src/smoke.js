@@ -504,7 +504,16 @@ async function run({ app, petWin, brain, settings, openSettings, getPopup, getSe
   await sw.webContents.executeJavaScript('(() => { const s = document.getElementById("provider"); s.value = "ollama"; s.dispatchEvent(new Event("change")); })()');
   await wait(300);
   const localUI = await sw.webContents.executeJavaScript('[document.getElementById("keyRow").hidden, document.getElementById("localText").textContent]');
-  check('local provider hides the key field', localUI[0] === true && /No key needed/.test(localUI[1]), JSON.stringify(localUI));
+  check('local provider hides the key field', localUI[0] === true && (await sw.webContents.executeJavaScript('getComputedStyle(document.getElementById("keyRow")).display')) === 'none' && /No key needed/.test(localUI[1]), JSON.stringify(localUI));
+  await sw.webContents.executeJavaScript('(() => { const s = document.getElementById("provider"); s.value = "groq"; s.dispatchEvent(new Event("change")); })()');
+  await wait(300);
+  const groqURL = await sw.webContents.executeJavaScript('[document.getElementById("baseURL").value, document.getElementById("baseURL").readOnly, getComputedStyle(document.getElementById("baseRow")).display]');
+  check('presets show their built-in base URL (read-only)', groqURL[0] === 'https://api.groq.com/openai/v1' && groqURL[1] === true && groqURL[2] !== 'none', JSON.stringify(groqURL));
+  await sw.webContents.executeJavaScript('(() => { const s = document.getElementById("provider"); s.value = "custom"; s.dispatchEvent(new Event("change")); })()');
+  await wait(300);
+  check('Custom base URL is editable', (await sw.webContents.executeJavaScript('document.getElementById("baseURL").readOnly')) === false);
+  const keyRowShown = await sw.webContents.executeJavaScript('getComputedStyle(document.getElementById("keyRow")).display');
+  check('key row really visible for providers that need a key', keyRowShown !== 'none');
   await sw.webContents.executeJavaScript('(() => { const s = document.getElementById("provider"); s.value = "anthropic"; s.dispatchEvent(new Event("change")); })()');
   await wait(300);
   check('settings shows the current mood', /^Feeling /.test(moodText || ''), moodText);
