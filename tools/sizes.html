@@ -1,0 +1,12 @@
+<!doctype html><html><head><meta charset="utf-8"><style>
+body{margin:0;background:#9db0c4;font:11px -apple-system;}
+#g{display:grid;grid-template-columns:repeat(9,150px);}
+.c{height:170px;position:relative;border-right:1px dashed #6b7c8f;border-bottom:2px solid #345;
+ background:repeating-linear-gradient(to top,transparent 0 19px,rgba(0,0,0,.12) 19px 20px)}
+.c img{position:absolute;bottom:0;left:50%;transform:translateX(-50%);height:auto}
+.c span{position:absolute;top:2px;left:3px;font-weight:600}
+</style></head><body><div id=g></div><script>
+const all=['sentado','caminando','de_pie','tumbado','mirando_arriba','mirando_izquierda','mirando_derecha','levantando_pata','panza_arriba','jugando','escalando','escondido','teletransportarse','asustado','cazando','corriendo','buscando','cazando_mariposas','saltando','resbalando','saludando','sacudiendose','estirandose','triunfante','bebiendo','jugando_pelota','durmiendo','bostezando','comiendo','curioso','enfadado','dando_amor','celebrando','cansado','sorprendido','vomitando'];
+const S=0.3, f=+(new URLSearchParams(location.search).get('f')||0);
+for(const n of all){const c=document.createElement('div');c.className='c';const i=new Image();i.src=`../assets/sprites/${n}/${n}_${f}.png`;i.onload=()=>{i.style.width=i.naturalWidth*S+'px'};c.innerHTML=`<span>${n}</span>`;c.appendChild(i);g.appendChild(c);}
+</script></body></html>

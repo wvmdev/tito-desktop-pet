@@ -1,0 +1,13 @@
+{
+  "name": "tito-desktop-pet",
+  "version": "0.1.0",
+  "description": "Tito — an animated desktop cat with an embedded AI assistant",
+  "main": "src/main.js",
+  "private": true,
+  "scripts": {
+    "start": "electron ."
+  },
+  "devDependencies": {
+    "electron": "45.3.3"
+  }
+}

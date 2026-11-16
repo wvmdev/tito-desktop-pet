@@ -1,0 +1,67 @@
+/* Liquid-glass look shared by Tito's popups and settings.
+   Popups are transparent windows, so the "glass" is drawn: a bright translucent fill, a
+   specular rim (light top edge, softer bottom), an inner glow and a soft drop shadow. */
+:root {
+  --glass-fill-1: rgba(255, 255, 255, 0.62);
+  --glass-fill-2: rgba(240, 246, 252, 0.38);
+  --glass-rim: rgba(255, 255, 255, 0.85);
+  --glass-rim-soft: rgba(255, 255, 255, 0.35);
+  --glass-shadow: rgba(16, 24, 40, 0.22);
+  --glass-divider: rgba(30, 40, 60, 0.14);
+  --glass-hover: rgba(255, 255, 255, 0.55);
+  --glass-press: rgba(255, 255, 255, 0.8);
+  --ink: #1f2430;
+  --ink-muted: #5b6474;
+  --accent: #3d8f5a;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --glass-fill-1: rgba(70, 76, 90, 0.62);
+    --glass-fill-2: rgba(36, 40, 50, 0.48);
+    --glass-rim: rgba(255, 255, 255, 0.32);
+    --glass-rim-soft: rgba(255, 255, 255, 0.10);
+    --glass-shadow: rgba(0, 0, 0, 0.45);
+    --glass-divider: rgba(255, 255, 255, 0.14);
+    --glass-hover: rgba(255, 255, 255, 0.12);
+    --glass-press: rgba(255, 255, 255, 0.2);
+    --ink: #f1f3f6;
+    --ink-muted: #a7afbb;
+    --accent: #7fd39a;
+  }
+}
+
+.glass {
+  position: relative;
+  background:
+    radial-gradient(120% 140% at 30% -20%, rgba(255, 255, 255, 0.55), transparent 55%),
+    linear-gradient(160deg, var(--glass-fill-1), var(--glass-fill-2));
+  border: 1px solid var(--glass-rim-soft);
+  box-shadow:
+    0 10px 28px var(--glass-shadow),
+    0 2px 6px rgba(0, 0, 0, 0.08),
+    inset 0 1px 0 var(--glass-rim),
+    inset 0 -1px 0 var(--glass-rim-soft),
+    inset 0 0 18px rgba(255, 255, 255, 0.18);
+  backdrop-filter: blur(24px) saturate(170%);
+  -webkit-backdrop-filter: blur(24px) saturate(170%);
+}
+/* specular highlight sweep along the top */
+.glass::before {
+  content: "";
+  position: absolute; left: 8%; right: 8%; top: 1px; height: 45%;
+  border-radius: inherit;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.45), rgba(255, 255, 255, 0));
+  pointer-events: none;
+  opacity: 0.7;
+}
+@media (prefers-color-scheme: dark) { .glass::before { opacity: 0.25; } }
+
+.pill { border-radius: 999px; }
+
+/* popup entrance */
+@keyframes pop-in {
+  from { opacity: 0; transform: translateY(6px) scale(0.96); }
+  to { opacity: 1; transform: none; }
+}
+.pop-in { animation: pop-in 160ms cubic-bezier(.2, .9, .3, 1.2) both; }
+@media (prefers-reduced-motion: reduce) { .pop-in { animation: none; } }

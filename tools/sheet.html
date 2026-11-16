@@ -1,0 +1,12 @@
+<!doctype html><html><head><meta charset="utf-8"><style>
+body{margin:0;background:#9db0c4;font:12px -apple-system;}
+.row{display:flex;align-items:flex-end;height:118px;border-bottom:1px solid #6b7c8f}
+.lab{width:130px;padding:4px;font-weight:600;align-self:center}
+.c{width:125px;height:112px;display:flex;align-items:flex-end;justify-content:center;border-left:1px dashed #7a8ba0;position:relative}
+.c img{max-width:120px;max-height:108px}
+.c span{position:absolute;top:1px;left:3px;color:#234;font-size:10px}
+</style></head><body><div id=g></div><script>
+const all=['sentado','caminando','de_pie','tumbado','mirando_arriba','mirando_izquierda','mirando_derecha','levantando_pata','panza_arriba','jugando','escalando','escondido','teletransportarse','asustado','cazando','corriendo','buscando','cazando_mariposas','saltando','resbalando','saludando','sacudiendose','estirandose','triunfante','bebiendo','jugando_pelota','durmiendo','bostezando','comiendo','curioso','enfadado','dando_amor','celebrando','cansado','sorprendido','vomitando'];
+const p=+new URLSearchParams(location.search).get('p');
+for(const n of all.slice(p*6,p*6+6)){const r=document.createElement('div');r.className='row';r.innerHTML=`<div class=lab>${n}</div>`+[0,1,2,3,4,5,6,7].map(i=>`<div class=c><span>${i}</span><img src="../assets/sprites/${n}/${n}_${i}.png"></div>`).join('');g.appendChild(r);}
+</script></body></html>
