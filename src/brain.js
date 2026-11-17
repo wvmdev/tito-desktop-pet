@@ -95,28 +95,15 @@ class Brain extends EventEmitter {
   floorTop() { const a = this.area(); return a.y + a.height; }
 
   _win(id) { return this.windows.find(w => w.id === id); }
-  _occluded(idx, px, py) {
-    for (let i = 0; i < idx; i++) {
-      const w = this.windows[i];
-      if (px >= w.x && px < w.x + w.w && py >= w.y - 2 && py < w.y + w.h) return true;
-    }
-    return false;
-  }
-  // Is (px, window top) a standable spot on window `w`?
+  // Is (px, window top) a standable spot on window `w`? Every window counts as a surface, wherever it
+  // sits in the stacking order (he is always drawn in front, so a window hidden behind others still
+  // works): only room above the edge, the ledge inset and the floor limit it.
   _standable(w, px) {
     const idx = this.windows.indexOf(w);
     if (idx < 0) return false;
     if (px < w.x + LEDGE_INSET || px > w.x + w.w - LEDGE_INSET) return false;
     const a = screen.getDisplayNearestPoint({ x: Math.round(px), y: Math.round(w.y) }).workArea;
     if (w.y < a.y + HEADROOM * this.size || w.y > a.y + a.height - 20) return false; // no headroom / below floor
-    if (this._occluded(idx, px, w.y)) return false;
-    // Nothing may sit directly above the edge, in front of OR behind this window. Otherwise he would
-    // stand "inside" another window that sticks up past this one (e.g. a Finder window peeking out
-    // above System Settings) instead of on top of the stack.
-    const above = w.y - 8;
-    for (const o of this.windows) {
-      if (o !== w && px >= o.x && px < o.x + o.w && above >= o.y && above < o.y + o.h) return false;
-    }
     return true;
   }
   // Top of the surface Tito currently stands on.
@@ -388,10 +375,10 @@ class Brain extends EventEmitter {
   }
 
   // ---------- windows in the way: climb them or turn back ----------
-  // Any vertical window edge Tito reaches counts as a wall — coming from outside the window or
-  // walking in front of it (windows often reach down behind the Dock, so he's usually in front of
-  // one). An edge counts when the window overlaps his body height there and that part of the edge
-  // isn't hidden behind another window. Returns the nearest edge crossed as the feet moved fx0->fx1.
+  // Any vertical window edge Tito reaches counts as a wall, whether he arrives from outside the window
+  // or walks in front of it (windows often reach down behind the Dock), and wherever the window sits
+  // in the stacking order: every window counts. An edge counts when the window overlaps his body
+  // height there. Returns the nearest edge crossed as the feet moved fx0->fx1.
   _wallCrossed(fx0, fx1, ignoreId = null) {
     if (fx0 === fx1) return null;
     const fy = this.footY();
@@ -400,7 +387,7 @@ class Brain extends EventEmitter {
     const a = this.area();
     const right = fx1 > fx0;
     let best = null;
-    this.windows.forEach((w, i) => {
+    this.windows.forEach(w => {
       if (this.surface.kind === 'window' && w.id === this.surface.id) return;
       if (w.id === ignoreId) return;
       if (w.y > bandBot || w.y + w.h < bandTop) return;
@@ -409,8 +396,6 @@ class Brain extends EventEmitter {
         if (sx < a.x + 20 || sx > a.x + a.width - 20) continue; // edge off-screen
         const crossed = right ? fx0 < sx && fx1 >= sx : fx0 > sx && fx1 <= sx;
         if (!crossed) continue;
-        const py = Math.min(w.y + w.h - 1, Math.max(w.y + 1, fy - 40 * this.size));
-        if (this._occluded(i, side === 'left' ? sx + 1 : sx - 1, py)) continue;
         if (!best || Math.abs(sx - fx0) < Math.abs(best.sx - fx0)) best = { w, side, sx };
       }
     });
@@ -452,11 +437,6 @@ class Brain extends EventEmitter {
     if (sx < a.x + 40 || sx > a.x + a.width - 40) return null;
     const landX = side === 'left' ? w.x + LEDGE_INSET + 20 : w.x + w.w - LEDGE_INSET - 20;
     if (!this._standable(w, landX)) return null;
-    // The edge he climbs must actually be visible: not hidden behind a window in front of it.
-    const idx = this.windows.indexOf(w);
-    const edgeX = side === 'left' ? sx + 1 : sx - 1;
-    const bottom = Math.min(w.y + w.h, this.floorTop()) - 4;
-    for (let y = w.y + 4; y <= bottom; y += 30) if (this._occluded(idx, edgeX, y)) return null;
     return { w, side, sx, landX };
   }
 
