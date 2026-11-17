@@ -9,7 +9,8 @@
 const { screen } = require('electron');
 const EventEmitter = require('events');
 const { PERSONALITIES, DEFAULT_PERSONALITY, resolvePersonality } = require('./personalities');
-const SPRITE = require('./sprite-metrics'); // visible extent of every animation (tools/metrics.js)
+const SPRITE = require('./sprite-metrics');
+const { mouseChance, cursorReaction } = require('./companion-rules'); // visible extent of every animation (tools/metrics.js)
 
 const FRAME_MS = 550;
 const LOOP_MS = FRAME_MS * 8;
@@ -70,6 +71,10 @@ class Brain extends EventEmitter {
     this._tickFn = null;
     this._last = 0;
     this._menuClosedAt = 0;
+    this.bond = 0;              // 0..100, from the companion rules (set by main)
+    this.reactionsOn = true;    // play with the cursor, dance to music
+    this.music = false;
+    this._cp = { at: 0, prev: null, shyAt: 0, playAt: 0 };
     this.setPersonality(personality);
     this._loop = setInterval(() => this._tick(), 16);
   }
@@ -234,6 +239,7 @@ class Brain extends EventEmitter {
     const dt = Math.min(0.05, (now - (this._last || now)) / 1000);
     this._last = now;
     if (this._tickFn) this._tickFn(dt, now);
+    this._cursorPlay(now);
   }
 
   // ---------- autonomous loop ----------
@@ -324,7 +330,7 @@ class Brain extends EventEmitter {
   // One walk/run in five heads for the mouse pointer, stopping beside it. Never while an app is
   // full screen, never when the pointer is already close or on another display.
   _goToMouse(spec) {
-    if (!this.getCursor || Math.random() >= MOUSE_CHANCE) return false;
+    if (!this.getCursor || Math.random() >= mouseChance(this.bond, MOUSE_CHANCE)) return false;
     if (this.fullscreenHere()) return false;
     const c = this.getCursor();
     const a = this.area();
@@ -589,10 +595,78 @@ class Brain extends EventEmitter {
       for (const a of this.mood.extras || []) if (!pool.has(a)) pool.set(a, 0.6);
       for (const [a, w] of pool) pool.set(a, w * (this.mood.bias[a] || 1));
     }
+    // Music playing: he dances now and then.
+    if (this.music && this.reactionsOn) {
+      pool.set('celebrando', (pool.get('celebrando') || 0.5) + 3);
+      pool.set('jugando', (pool.get('jugando') || 0.5) + 1.5);
+    }
+    // On a window he likes to perch: sitting, lying, dozing and watching the world, most of all
+    // right at the edge where his legs can dangle.
+    if (this.surface.kind === 'window') {
+      const [lo, hi] = this.xBounds();
+      const atEdge = this.x - lo < 55 * this.size || hi - this.x < 55 * this.size;
+      for (const a of ['sentado', 'tumbado', 'durmiendo', 'mirando_izquierda', 'mirando_derecha', 'mirando_arriba']) {
+        const edge = atEdge && (a === 'sentado' || a === 'tumbado' || a === 'durmiendo') ? 2 : 1;
+        pool.set(a, (pool.get(a) || 0.6) * 2.5 * edge);
+      }
+    }
     return [...pool].filter(([, w]) => w > 0);
   }
 
   setMood(state) { this.mood = state; }
+  setCompanion({ bond }) { if (typeof bond === 'number') this.bond = bond; }
+  setReactions(on) { this.reactionsOn = !!on; }
+  setMusic(on) {
+    on = !!on;
+    if (on === this.music) return;
+    this.music = on;
+    if (on && this.reactionsOn) this.react('celebrando', { loops: 3, speed: 2.2 });
+  }
+
+  // A one-off pose (a startle, a dance, a nudge), then back to normal. Never interrupts a drag, a
+  // fall, a climb, a menu or sleep, and never breaks "stay still".
+  react(anims, { loops = 2, speed = 2 } = {}) {
+    if (this.stayPose || !this._autonomous()) return false;
+    this._clear();
+    this.y = this.standY();
+    this._commit();
+    const name = Array.isArray(anims) ? pick(anims) : anims;
+    this._setMode('idle', { name, loops, react: true });
+    this._anim(name, speed);
+    this._after((loops * LOOP_MS) / speed, () => this.next());
+    return true;
+  }
+
+  // Fed by the user: he eats, then perks up.
+  eat() { return this.react('comiendo', { loops: 3, speed: 1.6 }); }
+
+  // The mouse pointer next to him: a quick swipe startles him (less so the better friends you are);
+  // a slow wiggle makes him play. Cooldowns keep it from being constant.
+  _cursorPlay(now) {
+    const cp = this._cp;
+    if (now - cp.at < 150) return;
+    const dt = (now - (cp.at || now - 150)) / 1000;
+    cp.at = now;
+    if (!this.getCursor) return;
+    const c = this.getCursor();
+    const prev = cp.prev;
+    cp.prev = c;
+    if (!prev || !this.reactionsOn || this.stayPose || !this._autonomous()) return;
+    const speed = Math.hypot(c.x - prev.x, c.y - prev.y) / dt;
+    const dx = c.x - this.footX();
+    const dy = c.y - (this.footY() - 50 * this.size);
+    const distance = Math.hypot(dx, dy) / this.size;
+    const r = cursorReaction({ distance, speed, bond: this.bond });
+    if (r === 'shy' && now - cp.shyAt > 12000) {
+      cp.shyAt = now;
+      this.facing = dx < 0 ? 'right' : 'left'; // turns away from it
+      this.react(['asustado', 'escondido'], { loops: 2, speed: 2 });
+    } else if (r === 'play' && this.mode === 'idle' && now - cp.playAt > 20000) {
+      cp.playAt = now;
+      this.facing = dx < 0 ? 'left' : 'right'; // looks at it
+      this.react(['jugando_pelota', 'cazando_mariposas', 'curioso'], { loops: 2, speed: 2 });
+    }
+  }
 
   // While a chat reply is being written Tito sits and watches; a little wave when it arrives.
   setChatting(on) {
@@ -645,7 +719,7 @@ class Brain extends EventEmitter {
   }
 
   // ---------- click: react once, then ask main to open the popup ----------
-  click() { this._interact('openMenu', ['sorprendido', 'saludando', 'dando_amor']); }
+  click() { this._interact('openMenu', this.bond >= 40 ? ['dando_amor', 'saludando'] : ['sorprendido', 'saludando', 'dando_amor']); }
   dblclick() { this._interact('openSize', ['saludando']); }
 
   _interact(event, reactions) {
@@ -658,6 +732,7 @@ class Brain extends EventEmitter {
     this._commit();
     // Popup opens right away; the reaction plays underneath it, then he settles into a sit.
     this._setMode('menu');
+    if (event === 'openMenu') this.emit('pet'); // a click on him counts as petting
     this.emit(event);
     const speed = 2.5;
     this._anim(pick(reactions), speed);

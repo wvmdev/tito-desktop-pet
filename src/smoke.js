@@ -108,6 +108,7 @@ async function run({ app, petWin, brain, settings, openSettings, getPopup, getSe
   const shot = async (win, file) => fs.writeFileSync(path.join(out, file), (await win.webContents.capturePage()).toPNG());
   const js = code => wc.executeJavaScript(code);
   const settle = async () => { brain.mode = 'idle'; brain.idle({ forever: true }); await wait(500); };
+  brain.setReactions(false); // the older movement tests move the fake cursor about; the companion tests switch reactions on themselves
   const wa = screen.getPrimaryDisplay().workArea;
   const timeout = setTimeout(() => { console.log('SMOKE TIMEOUT'); app.exit(2); }, 700000);
 
@@ -514,6 +515,7 @@ async function run({ app, petWin, brain, settings, openSettings, getPopup, getSe
   const cursor = { x: wa.x + 700, y: 300 };
   brain.getCursor = () => cursor;
   const mouseWalk = async (rand, windows = []) => {
+    brain.bond = 0; // a stranger: exactly 1 walk in 5 (friends go more often)
     brain.setWindows(windows);
     await settle();
     brain.surface = { kind: 'ground' };
@@ -551,6 +553,105 @@ async function run({ app, petWin, brain, settings, openSettings, getPopup, getSe
   brain.setWindows([]);
   await settle();
 
+  // ---- companion: bond, hunger, petting, music, cursor play, perching ----
+  {
+    const CR = require('./companion-rules');
+    const H = CR.HOUR, t0 = 1e12;
+    check('hunger grows with time since the last meal (empty after 8 h)', CR.hunger(t0, t0) === 0 && Math.abs(CR.hunger(t0, t0 + 4 * H) - 0.5) < 1e-9 && CR.hunger(t0, t0 + 20 * H) === 1);
+    check('hunger labels', CR.hungerLabel(0.1) === 'Full' && CR.hungerLabel(0.5) === 'Fine' && CR.hungerLabel(0.7) === 'Hungry' && CR.hungerLabel(0.95) === 'Starving');
+    const p1 = CR.pet(10, 0, t0), p2 = CR.pet(11, t0, t0 + 3000), p3 = CR.pet(11, t0, t0 + 11000);
+    check('petting adds 1 bond, at most once per 10 s', p1.counted && p1.bond === 11 && !p2.counted && p2.bond === 11 && p3.counted && p3.bond === 12);
+    check('petting never goes past 100', CR.pet(100, 0, t0).bond === 100);
+    const f1 = CR.feed(10, t0, t0 + 0.5 * H), f2 = CR.feed(10, t0, t0 + 3 * H);
+    check('he refuses food when he is not hungry', !f1.ok && f1.bond === 10 && /not hungry/i.test(f1.reason));
+    check('feeding when hungry adds 3 bond and resets hunger', f2.ok && f2.bond === 13 && CR.hunger(f2.lastFed, f2.lastFed) === 0);
+    check('bond fades 1 per day after the first day away', CR.decay(50, t0, t0 + 20 * H) === 50 && CR.decay(50, t0, t0 + 3 * 24 * H) === 48 && CR.decay(0, t0, t0 + 30 * 24 * H) === 0);
+    check('closer friends walk to the pointer more often', CR.mouseChance(0) === 0.2 && CR.mouseChance(100) > 0.35 && CR.mouseChance(100) <= 0.45);
+    check('cursor: a quick swipe startles, a slow wiggle plays, far away is ignored',
+      CR.cursorReaction({ distance: 40, speed: 1500, bond: 0 }) === 'shy' && CR.cursorReaction({ distance: 40, speed: 120, bond: 0 }) === 'play'
+      && CR.cursorReaction({ distance: 300, speed: 1500, bond: 0 }) === null && CR.cursorReaction({ distance: 40, speed: 1000, bond: 100 }) !== 'shy');
+    const { computeMood } = require('./mood-rules');
+    const noon = new Date(2026, 0, 14, 10, 0, 0);
+    const hungry = computeMood({ date: noon, hunger: 0.9 });
+    check('a hungry Tito is grumpy and keeps looking for food', hungry.mood === 'grumpy' && hungry.bias.comiendo > computeMood({ date: noon }).bias.comiendo && hungry.reasons.includes('Starving'));
+    const morning = computeMood({ date: new Date(2026, 0, 14, 7, 30, 0) });
+    check('mornings are lively, nights are sleepy', morning.mood === 'happy' && computeMood({ date: new Date(2026, 0, 14, 2, 0, 0) }).mood === 'tired');
+    const bad = fn => { try { fn(); return false; } catch { return true; } };
+    settings.set('bond', 55.55);
+    const okBond = settings.get('bond') === 55.6;
+    check('bond and hunger are saved settings, validated', okBond && bad(() => settings.set('bond', 'x')) && bad(() => settings.set('lastFed', -1)) && settings.get('bond') === 55.6 && typeof settings.get('reactions') === 'boolean', `bond=${settings.get('bond')}`);
+    settings.set('bond', 10);
+
+    // clicks count as petting; close friends answer with love, not a startle
+    brain.setStay(null); brain.setWindows([]); await settle();
+    let pets = 0; const onPet = () => { pets++; }; brain.on('pet', onPet);
+    brain.bond = 0; brain.click(); await wait(300);
+    check('clicking him emits a pet', pets === 1, `pets=${pets}`);
+    brain.menuClosed(); await wait(900);
+    brain.bond = 80; brain._menuClosedAt = 0; brain.click(); await wait(200);
+    check('a close friend answers a click with love or a wave', ['dando_amor', 'saludando'].includes(brain.anim), `anim=${brain.anim}`);
+    brain.removeListener('pet', onPet);
+    brain.menuClosed(); brain.bond = 0; await wait(900);
+    brain.idle(); await wait(200);
+
+    // music: he dances, and keeps dancing now and then while it plays
+    brain.setReactions(true);
+    brain.setMusic(true); await wait(200);
+    check('music starts a dance', brain.anim === 'celebrando', `anim=${brain.anim}`);
+    const pool = Object.fromEntries(brain._idlePool());
+    check('while music plays he dances more', (pool.celebrando || 0) > 3, JSON.stringify(pool.celebrando));
+    brain.setMusic(false);
+    check('when it stops the dance weighting goes away', !((Object.fromEntries(brain._idlePool()).celebrando || 0) > 3));
+    brain.setReactions(false); brain.idle(); await wait(150);
+    brain.setMusic(true);
+    check('no dancing when lively reactions are off', brain.anim !== 'celebrando' || brain.mode === 'idle' && !brain.mode.react);
+    brain.setMusic(false); brain.setReactions(true);
+
+    // eating
+    brain.idle(); await wait(150);
+    brain.eat(); await wait(150);
+    check('feeding makes him eat', brain.anim === 'comiendo', `anim=${brain.anim}`);
+    brain.setStay('sentado'); await wait(200);
+    check('he never leaves "stay still" for a reaction', !brain.react('asustado') && brain.anim === 'sentado');
+    brain.setStay(null); await settle();
+
+    // cursor play
+    let cur = { x: 5000, y: 5000 };
+    brain.getCursor = () => cur;
+    brain.setReactions(true);
+    brain._cp.shyAt = 0; brain._cp.playAt = 0;
+    brain.idle(); await wait(400);
+    const near = { x: brain.footX() + 30 * brain.size, y: brain.footY() - 50 * brain.size };
+    cur = { x: near.x + 500, y: near.y }; await wait(260);
+    cur = near; await wait(450);
+    check('a quick swipe at him startles him', ['asustado', 'escondido'].includes(brain.anim), `anim=${brain.anim}`);
+    cur = { x: 5000, y: 5000 }; await wait(200);
+    brain._cp.shyAt = 0; brain._cp.playAt = 0;
+    brain.idle(); await wait(300);
+    let toggle = false;
+    const wig = setInterval(() => { toggle = !toggle; cur = { x: near.x + (toggle ? 30 : 0), y: near.y }; }, 120);
+    await wait(900);
+    clearInterval(wig);
+    check('a slow wiggle next to him makes him play', ['jugando_pelota', 'cazando_mariposas', 'curioso'].includes(brain.anim), `anim=${brain.anim}`);
+    brain._cp.shyAt = 0; brain._cp.playAt = 0;
+    brain.setReactions(false); brain.idle(); await wait(200);
+    cur = { x: near.x + 500, y: near.y }; await wait(260); cur = near; await wait(450);
+    check('cursor play is off when lively reactions are off', !['asustado', 'escondido'].includes(brain.anim), `anim=${brain.anim}`);
+    brain.setReactions(true);
+    brain.getCursor = null; cur = { x: 5000, y: 5000 };
+
+    // perching: on a window he sits, lies and dozes much more than on the floor
+    const floorPool = Object.fromEntries(brain._idlePool());
+    const perch = { id: 31, pid: 95, x: wa.x + 300, y: brain.floorTop() - 300, w: 500, h: 300 };
+    brain.setWindows([perch]); await settle();
+    brain.surface = { kind: 'window', id: perch.id }; brain.y = brain.standY(); brain._commit();
+    const perchPool = Object.fromEntries(brain._idlePool());
+    check('on a window top he perches (sit / lie / doze weights rise)', ['sentado', 'tumbado', 'durmiendo'].every(a => (perchPool[a] || 0) > (floorPool[a] || 0)),
+      `floor=${JSON.stringify(floorPool.sentado)} perch=${JSON.stringify(perchPool.sentado)}`);
+    brain.setWindows([]); await settle();
+    brain.setReactions(false);
+  }
+
   // ---- stay still ----
   settings.set('stayPose', 'durmiendo');
   settings.set('stayStill', true);
@@ -580,7 +681,7 @@ async function run({ app, petWin, brain, settings, openSettings, getPopup, getSe
 
   // ---- phase 4: sleep when the user is away ----
   await settle();
-  brain.mode = 'idle'; brain.next();
+  brain.mode = 'idle'; brain.idle();
   settings.set('sleepAfterMin', 5);
   checkActivity(4 * 60);
   check('awake before the limit', brain.mode !== 'sleep');
@@ -1095,6 +1196,17 @@ async function run({ app, petWin, brain, settings, openSettings, getPopup, getSe
   await swjs(`document.getElementById('pDelete').click()`);
   await wait(900);
   check('deleting removes it and goes back to Balanced', settings.get('customPersonalities').length === 0 && settings.get('personality') === 'balanced' && (await swjs(`document.querySelectorAll('label.card').length`)) === 6);
+  {
+    const comp = await sw.webContents.executeJavaScript(`({ tier: document.getElementById('bondTier').textContent, hearts: document.getElementById('bondHearts').textContent, hunger: document.getElementById('hungerLabel').textContent, feedDisabled: document.getElementById('feedBtn').disabled, reactions: document.getElementById('reactions').checked })`);
+    check('Settings shows the bond, hunger, a Feed button and the lively-reactions switch', comp.tier.length > 2 && /♥|♡/.test(comp.hearts) && ['Full', 'Fine', 'Hungry', 'Starving'].includes(comp.hunger) && comp.feedDisabled === true && comp.reactions === true, JSON.stringify(comp));
+    await sw.webContents.executeJavaScript('document.getElementById("reactions").click()');
+    await wait(300);
+    check('the lively-reactions switch is saved and reaches the brain', settings.get('reactions') === false && brain.reactionsOn === false);
+    await sw.webContents.executeJavaScript('document.getElementById("reactions").click()');
+    await wait(300);
+    check('...and switches back on', settings.get('reactions') === true && brain.reactionsOn === true);
+    brain.setReactions(false);
+  }
   const moodText = sw && await sw.webContents.executeJavaScript('document.getElementById("moodLabel").textContent');
   // Full Access needs the native warning dialog's explicit yes (stubbed here: Cancel, then Enable).
   const { dialog } = require('electron');

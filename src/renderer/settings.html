@@ -257,6 +257,33 @@
     </div>
     <div class="warn" id="weatherWarn" aria-live="polite"></div>
 
+    <h2>Companion</h2>
+    <div class="stack">
+      <div class="field glass">
+        <div class="text">
+          <div class="title">Bond: <span id="bondTier">…</span></div>
+          <div class="sub" id="bondHearts" aria-label="Bond level">…</div>
+        </div>
+      </div>
+      <div class="field glass">
+        <div class="text">
+          <div class="title">Hunger: <span id="hungerLabel">…</span></div>
+          <div class="sub" id="feedNote">Petting him and feeding him make you closer. Days apart fade it slowly.</div>
+        </div>
+        <button class="btn" id="feedBtn" type="button">Feed</button>
+      </div>
+      <div class="field glass">
+        <div class="text">
+          <div class="title" id="reactTitle">Lively reactions</div>
+          <div class="sub">Plays with your mouse pointer, dances when music plays, waves when you have been quiet.</div>
+        </div>
+        <span class="switch">
+          <input type="checkbox" id="reactions" role="switch" aria-labelledby="reactTitle">
+          <span class="track"></span><span class="knob"></span>
+        </span>
+      </div>
+    </div>
+
     <h2>Size</h2>
     <div class="row glass">
       <label for="size">Tito's size</label>

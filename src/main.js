@@ -10,6 +10,8 @@ const { Brain } = require('./brain');
 const { Settings, SIZE_MIN, SIZE_MAX } = require('./settings');
 const { personalityList, STAY_POSES, EMOTIONS, EMOTION_INFO } = require('./personalities');
 const { Mood } = require('./mood');
+const CR = require('./companion-rules');
+const { Awareness } = require('./awareness');
 const { SecretStore } = require('./ai/secrets');
 const { createProvider, normalizeError, PROVIDERS, providerList } = require('./ai/providers');
 const { LEVELS, PERM_TOGGLES } = require('./ai/permissions');
@@ -139,6 +141,7 @@ function createPetWindow() {
   brain.on('openMenu', () => openPopup('menu'));
   brain.on('openSize', () => openPopup('size'));
   brain.on('closeMenu', closePopup);
+  brain.on('pet', petted);
   if (process.env.TITO_DEBUG) brain.on('wall', w => console.log('[wall]', w.climbable ? 'climbable' : `NOT climbable: ${w.why}`));
   if (process.env.TITO_DEBUG) brain.on('mode',(m, info) => console.log('[brain]', m, JSON.stringify(info), 'at', Math.round(brain.x), Math.round(brain.y)));
   if (settings.get('stayStill')) brain.setStay(settings.get('stayPose'));
@@ -191,10 +194,15 @@ function startCursorWatch() {
 
 // ---------- sleep when the user is away ----------
 // Electron reports how long since the last mouse/keyboard input (no permissions needed).
+let nudged = false;
 function checkActivity(idleSec = powerMonitor.getSystemIdleTime()) {
   if (!brain) return;
   const limit = settings.get('sleepAfterMin');
   if (brain.mode === 'sleep') { if (idleSec < 3) brain.wake(); return; }
+  // Quiet for a while but not yet asleep: a little wave, once per quiet spell.
+  const nudgeAt = limit > 0 ? Math.min(180, limit * 60 * 0.6) : 180;
+  if (idleSec < 5) nudged = false;
+  else if (!nudged && idleSec >= nudgeAt && settings.get('reactions')) { nudged = true; brain.react(['saludando', 'buscando'], { loops: 2 }); }
   if (limit > 0 && idleSec >= limit * 60) brain.sleep();
 }
 function startActivityWatch() {
@@ -204,9 +212,64 @@ function startActivityWatch() {
   powerMonitor.on('unlock-screen', () => brain && brain.wake());
 }
 
+// ---------- companion: bond, hunger, petting ----------
+let lastPetAt = 0;
+let awareness = null;
+const companionState = () => ({ bond: settings.get('bond'), hunger: CR.hunger(settings.get('lastFed')) });
+function companionInfo() {
+  const { bond, hunger } = companionState();
+  return { bond, tier: CR.bondTier(bond).label, hunger, hungerLabel: CR.hungerLabel(hunger), canFeed: hunger >= CR.FEED_MIN_HUNGER };
+}
+function pushCompanion() {
+  if (brain) brain.setCompanion(companionState());
+  if (mood) mood.recompute();
+  if (settingsWin && !settingsWin.isDestroyed()) settingsWin.webContents.send('settings:companion', companionInfo());
+}
+function initCompanion() {
+  const now = Date.now();
+  if (!settings.get('lastFed')) settings.set('lastFed', now); // starts full
+  settings.set('bond', CR.decay(settings.get('bond'), settings.get('lastSeen'), now));
+  settings.set('lastSeen', now);
+  setInterval(() => { settings.set('lastSeen', Date.now()); pushCompanion(); }, 10 * 60 * 1000);
+}
+function petted() {
+  const r = CR.pet(settings.get('bond'), lastPetAt);
+  if (!r.counted) return;
+  lastPetAt = Date.now();
+  settings.set('bond', r.bond);
+  pushCompanion();
+}
+// Returns { ok, message }.
+function feedTito() {
+  const r = CR.feed(settings.get('bond'), settings.get('lastFed'));
+  if (!r.ok) { if (brain) brain.react('sentado', { loops: 1 }); return { ok: false, message: r.reason }; }
+  settings.set('bond', r.bond);
+  settings.set('lastFed', r.lastFed);
+  if (brain) brain.eat();
+  pushCompanion();
+  refreshTrayMenu();
+  return { ok: true, message: 'Yum!' };
+}
+// Music, battery and long idle spells (needs no screen access).
+let lowBatteryFired = 0;
+function startAwareness() {
+  if (process.env.TITO_SMOKE) return;
+  awareness = new Awareness();
+  awareness.on('music', on => { if (brain && settings.get('reactions')) brain.setMusic(on); });
+  awareness.start();
+  mood.on('change', () => {
+    const b = mood.battery;
+    if (!b || b.charging || typeof b.percent !== 'number') { lowBatteryFired = 0; return; }
+    const level = b.percent <= 10 ? 2 : b.percent <= 20 ? 1 : 0;
+    if (level > lowBatteryFired && brain && settings.get('reactions')) brain.react(level === 2 ? 'asustado' : 'cansado', { loops: 2 });
+    lowBatteryFired = level;
+  });
+}
+
 // ---------- mood (time of day, battery, weather, day of week) ----------
 function startMood() {
   mood = new Mood(settings);
+  mood.companion = companionState;
   mood.on('change', summary => {
     if (brain) brain.setMood(mood.state);
     if (settingsWin && !settingsWin.isDestroyed()) settingsWin.webContents.send('settings:mood', summary);
@@ -244,7 +307,7 @@ function startWindowFeed() {
 // ---------- glass popups: 'menu' (Settings / Chat) and 'size' (slider) ----------
 const POPUPS = {
   // Compact pills (window includes ~7px around the pill for its shadow).
-  menu: { page: 'popup.html', w: 104, h: 50 },
+  menu: { page: 'popup.html', w: 146, h: 50 },
   size: { page: 'size.html', w: 196, h: 50 },
 };
 
@@ -357,6 +420,9 @@ function registerIpc() {
   ipcMain.on('menu:close', e => { if (fromMenu(e)) closePopup(); });
   ipcMain.on('menu:settings', e => { if (fromMenu(e)) { closePopup(); openSettings(); } });
   ipcMain.on('menu:chat', e => { if (fromMenu(e)) { closePopup(); openChat(); } });
+  ipcMain.on('menu:feed', e => { if (fromMenu(e)) { const r = feedTito(); if (r.ok) closePopup(); else e.sender.send('popup:note', r.message); } });
+  ipcMain.handle('companion:get', e => { if (!fromSettings(e)) throw new Error('denied'); return companionInfo(); });
+  ipcMain.handle('companion:feed', e => { if (!fromSettings(e)) throw new Error('denied'); return { ...feedTito(), info: companionInfo() }; });
 
   const fromChat = e => chatWin && e.sender === chatWin.webContents;
   ipcMain.handle('chat:get', e => {
@@ -386,7 +452,7 @@ function registerIpc() {
     if (!fromSettings(e)) throw new Error('denied');
     return {
       settings: settings.all(), personalities: personalityList(settings.get('customPersonalities')), sizeRange: [SIZE_MIN, SIZE_MAX],
-      stayPoses: STAY_POSES, mood: mood && mood.summary(), ai: aiStatus(), tasks: scheduler.list(),
+      stayPoses: STAY_POSES, mood: mood && mood.summary(), companion: companionInfo(), ai: aiStatus(), tasks: scheduler.list(),
       emotions: EMOTIONS.map(id => ({ id, ...EMOTION_INFO[id] })),
       security: { levels: LEVELS, toggles: PERM_TOGGLES },
     };
@@ -677,6 +743,7 @@ function refreshTrayMenu() {
     { label: 'Chat…', click: openChat },
     { label: 'Settings…', click: openSettings },
     { label: 'Size…', click: () => openPopup('size') },
+    { label: 'Feed Tito', click: () => feedTito() },
     ...(settings.get('tasks').length ? [{ label: `Pause scheduled tasks (${settings.get('tasks').length})`, type: 'checkbox',
       checked: settings.get('tasksPaused'), click: item => settings.set('tasksPaused', item.checked) }] : []),
     { label: `Stay still (${pose ? pose.label.toLowerCase() : 'sitting'})`, type: 'checkbox',
@@ -694,6 +761,7 @@ app.whenReady().then(() => {
   secrets = new SecretStore();
   settings.on('change', (key, value) => {
     if (key === 'personality' && brain) brain.setPersonality(value);
+    if (key === 'reactions' && brain) { brain.setReactions(value); if (!value) brain.setMusic(false); }
     if (key === 'customPersonalities' && brain) brain.setPersonality(settings.get('personality')); // an edit to the one in use applies at once
     if (key === 'securityLevel' && value === 'lockdown' && chat && chat.busy) stopTask();
     if (['aiProvider', 'aiModels'].includes(key) && chatWin && !chatWin.isDestroyed()) chatWin.webContents.send('chat:status', chatStatus());
@@ -712,6 +780,9 @@ app.whenReady().then(() => {
   startMood();
   startChat();
   startActivityWatch();
+  initCompanion();
+  startAwareness();
+  if (brain) { brain.setCompanion(companionState()); brain.setReactions(settings.get('reactions')); }
   ensurePopup('menu');
   ensurePopup('size');
   startWindowFeed();

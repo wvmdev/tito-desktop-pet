@@ -23,6 +23,8 @@ contextBridge.exposeInMainWorld('tito', {
     close: () => ipcRenderer.send('menu:close'),
     openSettings: () => ipcRenderer.send('menu:settings'),
     openChat: () => ipcRenderer.send('menu:chat'),
+    feed: () => ipcRenderer.send('menu:feed'),
+    onNote: cb => ipcRenderer.on('popup:note', (_e, t) => cb(t)),
   },
   chat: {
     get: () => ipcRenderer.invoke('chat:get'),
@@ -43,6 +45,11 @@ contextBridge.exposeInMainWorld('tito', {
     get: () => ipcRenderer.invoke('size:get'),
     set: value => ipcRenderer.send('size:set', value),
     close: () => ipcRenderer.send('size:close'),
+  },
+  companion: {
+    get: () => ipcRenderer.invoke('companion:get'),
+    feed: () => ipcRenderer.invoke('companion:feed'),
+    onChange: cb => ipcRenderer.on('settings:companion', (_e, c) => cb(c)),
   },
   tasks: {
     add: task => ipcRenderer.invoke('tasks:add', task),

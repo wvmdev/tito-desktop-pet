@@ -137,7 +137,8 @@ class Mood extends EventEmitter {
   }
 
   recompute() {
-    this.state = computeMood({ date: new Date(), battery: this.battery, weather: this.weather });
+    const c = this.companion ? this.companion() : {};
+    this.state = computeMood({ date: new Date(), battery: this.battery, weather: this.weather, hunger: c.hunger || 0, bond: c.bond || 0 });
     this.emit('change', this.summary());
   }
 

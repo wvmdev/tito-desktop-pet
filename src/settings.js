@@ -40,6 +40,10 @@ const DEFAULTS = {
   tasks: [],              // scheduled tasks, see tasks.js
   tasksPaused: false,
   chatExpanded: false,    // chat opens compact; the user can expand it
+  reactions: true,        // plays with the cursor, dances to music, nudges you when you are idle
+  bond: 10,               // 0..100, see companion-rules.js
+  lastFed: 0,             // ms timestamp; 0 = not yet started (set on first run)
+  lastSeen: 0,            // ms timestamp of the last run, to fade the bond after days away
 };
 
 const VALIDATORS = {
@@ -68,6 +72,10 @@ const VALIDATORS = {
   actionPerms: v => validatePerms(v),
   tasks: v => validateTasks(v),
   tasksPaused: v => (typeof v === 'boolean' ? v : null),
+  reactions: v => (typeof v === 'boolean' ? v : null),
+  bond: v => (typeof v === 'number' && Number.isFinite(v) ? Math.min(100, Math.max(0, Math.round(v * 10) / 10)) : null),
+  lastFed: v => (typeof v === 'number' && Number.isFinite(v) && v >= 0 ? Math.round(v) : null),
+  lastSeen: v => (typeof v === 'number' && Number.isFinite(v) && v >= 0 ? Math.round(v) : null),
   chatExpanded: v => (typeof v === 'boolean' ? v : null),
   locationOverride: v => (typeof v === 'string' ? v.replace(/[\u0000-\u001f]/g, '').trim().slice(0, 80) : null),
 };

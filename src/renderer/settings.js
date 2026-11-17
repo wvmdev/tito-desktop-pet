@@ -7,7 +7,7 @@ const ICON = {
 if (window.tito.platform !== 'darwin') document.body.classList.add('no-vibrancy');
 
 async function init() {
-  const { personalities, settings, sizeRange, stayPoses, mood, ai, security, tasks, emotions } = await api.get();
+  const { personalities, settings, sizeRange, stayPoses, mood, ai, security, tasks, emotions, companion } = await api.get();
 
   // ---- personalities: every one shows its emotion mix; the user can build their own ----
   const grid = document.getElementById('personalities');
@@ -161,6 +161,27 @@ async function init() {
   stay.addEventListener('change', () => api.set('stayStill', stay.checked));
   syncStay(settings);
   api.onChanged(syncStay); // e.g. toggled from the menu-bar icon
+
+  // ---- companion: bond, hunger, feeding, lively reactions ----
+  const showCompanion = c => {
+    if (!c) return;
+    document.getElementById('bondTier').textContent = c.tier;
+    const hearts = Math.round(c.bond / 20); // 0..5
+    document.getElementById('bondHearts').textContent = '♥'.repeat(hearts) + '♡'.repeat(5 - hearts) + `  ${Math.round(c.bond)}%`;
+    document.getElementById('hungerLabel').textContent = c.hungerLabel;
+    document.getElementById('feedBtn').disabled = !c.canFeed;
+  };
+  showCompanion(companion);
+  window.tito.companion.onChange(showCompanion);
+  const feedNote = document.getElementById('feedNote');
+  document.getElementById('feedBtn').addEventListener('click', async () => {
+    const r = await window.tito.companion.feed();
+    showCompanion(r.info);
+    feedNote.textContent = r.message;
+  });
+  const reactions = document.getElementById('reactions');
+  reactions.checked = settings.reactions;
+  reactions.addEventListener('change', () => api.set('reactions', reactions.checked));
 
   // ---- mood & sleep ----
   const showMood = m => {

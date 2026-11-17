@@ -43,7 +43,7 @@ const WEATHER_TEXT = {
  * @param {{percent:number, charging:boolean}|null} input.battery  null = no battery / unknown
  * @param {{code:number, tempC:number, isDay:boolean, place?:string}|null} input.weather
  */
-function computeMood({ date = new Date(), battery = null, weather = null } = {}) {
+function computeMood({ date = new Date(), battery = null, weather = null, hunger = 0, bond = 0 } = {}) {
   const s = { happy: 0.5, tired: 0, grumpy: 0, scared: 0, calm: 0.5 };
   const reasons = [];
   const extraBias = {};
@@ -52,8 +52,8 @@ function computeMood({ date = new Date(), battery = null, weather = null } = {})
   // Time of day
   const h = date.getHours();
   if (h < 6) add('tired', 2.5, 'Middle of the night');
-  else if (h < 9) { add('tired', 1, 'Early morning'); add('calm', 0.5); }
-  else if (h < 12) { add('happy', 0.5, 'Morning'); add('calm', 0.5); }
+  else if (h < 9) { add('happy', 1.4, 'Fresh morning'); add('tired', 0.3); extraBias.celebrando = 1.5 }
+  else if (h < 12) { add('happy', 1, 'Morning'); add('calm', 0.4); }
   else if (h < 14) { add('calm', 0.8, 'Lunchtime'); extraBias.comiendo = 3; extraBias.bebiendo = 2; }
   else if (h < 18) add('happy', 1, 'Afternoon');
   else if (h < 21) { add('calm', 1, 'Evening'); add('happy', 0.3); }
@@ -66,6 +66,12 @@ function computeMood({ date = new Date(), battery = null, weather = null } = {})
   } else if (battery && battery.charging && battery.percent < 100) {
     add('happy', 0.3, 'Charging');
   }
+
+  // Hunger and bond (companion-rules.js)
+  if (hunger >= 0.85) { add('grumpy', 2, 'Starving'); extraBias.comiendo = (extraBias.comiendo || 1) * 5; }
+  else if (hunger >= 0.65) { add('grumpy', 0.9, 'Hungry'); extraBias.comiendo = (extraBias.comiendo || 1) * 3; }
+  if (bond >= 70) add('happy', 0.6, 'Best friends with you');
+  else if (bond >= 40) add('happy', 0.3);
 
   // Weather
   const kind = weather ? weatherKind(weather.code) : null;
