@@ -386,27 +386,28 @@ async function run({ app, petWin, brain, settings, openSettings, getPopup, getSe
   const floor = brain.floorTop();
   const wall = { id: 7, pid: 97, x: wa.x + 700, y: floor - 320, w: 300, h: 320 };
   const realRandom = Math.random;
-  for (const [label, r] of [['climbs it', 0], ['turns back', 0.99]]) {
+  for (const [label, r] of [['climbs it', 0], ['climbs it (49% roll)', 0.49], ['turns back (51% roll)', 0.51], ['turns back', 0.99]]) {
     brain.setWindows([wall]);
     await settle();
     brain.surface = { kind: 'ground' };
     brain.facing = 'right';
     brain.x = wall.x - 250 - brain.W / 2; brain.y = brain.standY(); brain._commit();
+    const idleBefore = modes.filter(m => m.m === 'idle').length;
     Math.random = () => r;
     brain._travelTo(wall.x + 300 - brain.W / 2, { mode: 'walk', anim: 'caminando', animSpeed: 2.2, speed: 300 });
     await wait(1100);
     Math.random = realRandom;
     const crossed = brain.footX() > wall.x + 5 && brain.surface.kind === 'ground';
-    if (r === 0) {
+    if (r < 0.5) {
       let ok = brain.mode === 'climb';
       for (let i = 0; i < 40 && brain.surface.kind !== 'window'; i++) await wait(100);
       check(`walking into a window: ${label}`, ok && brain.surface.kind === 'window' && brain.surface.id === 7 && !crossed,
         `mode=${brain.mode} surface=${brain.surface.kind}`);
     } else {
-      const looked = brain.anim === 'mirando_arriba' || modes.slice(-3).some(m => m.info && m.info.wall);
-      await wait(1300);
-      check(`walking into a window: ${label}`, looked && !crossed && brain.facing === 'left' && brain.footX() < wall.x,
-        `mode=${brain.mode} facing=${brain.facing} foot=${Math.round(brain.footX())} wall=${wall.x}`);
+      await wait(300);
+      const stopped = modes.filter(m => m.m === 'idle').length !== idleBefore; // any pause (look up / idle) counts
+      check(`walking into a window: ${label} - without stopping`, !stopped && brain.mode === 'walk' && !crossed && brain.facing === 'left' && brain.footX() < wall.x,
+        `mode=${brain.mode} facing=${brain.facing} foot=${Math.round(brain.footX())} wall=${wall.x} stopped=${stopped}`);
     }
   }
   // In front of a big window that reaches down behind the Dock (the usual real layout):
@@ -418,11 +419,12 @@ async function run({ app, petWin, brain, settings, openSettings, getPopup, getSe
     brain.surface = { kind: 'ground' };
     brain.facing = 'right';
     brain.x = big.x + big.w - 200 - brain.W / 2; brain.y = brain.standY(); brain._commit();
+    const idleBefore2 = modes.filter(m => m.m === 'idle').length;
     Math.random = () => r;
     brain._travelTo(big.x + big.w + 200 - brain.W / 2, { mode: 'run', anim: 'corriendo', animSpeed: 3.5, speed: 400 });
     await wait(800);
     Math.random = realRandom;
-    if (r === 0) {
+    if (r < 0.5) {
       for (let i = 0; i < 60 && brain.surface.kind !== 'window'; i++) await wait(100);
       const b = petWin.getBounds();
       const lift = await js('parseFloat(document.getElementById("stage").style.bottom || "0")');
@@ -432,9 +434,10 @@ async function run({ app, petWin, brain, settings, openSettings, getPopup, getSe
         Math.abs(brain.footY() - big.y) < 1 && b.y >= wa.y && Math.abs(b.y + b.height - lift - big.y) < 2,
         `foot=${brain.footY()} top=${big.y} winY=${b.y} lift=${lift}`);
     } else {
-      await wait(1300);
-      check(`in front of a window, reaching its edge: ${label}`, brain.facing === 'left' && brain.footX() < big.x + big.w,
-        `facing=${brain.facing} foot=${Math.round(brain.footX())} edge=${big.x + big.w}`);
+      await wait(300);
+      const stopped2 = modes.filter(m => m.m === 'idle').length !== idleBefore2;
+      check(`in front of a window, reaching its edge: ${label} - running on without stopping`, !stopped2 && brain.mode === 'run' && brain.facing === 'left' && brain.footX() < big.x + big.w,
+        `mode=${brain.mode} facing=${brain.facing} foot=${Math.round(brain.footX())} edge=${big.x + big.w} stopped=${stopped2}`);
     }
   }
   brain.setWindows([]);

@@ -25,6 +25,7 @@ const SNAP_UP = 40;      // dropped this close below a window top -> stand on it
 const HEADROOM = 135;    // px above a window top needed for Tito's body (sitting height at size 1)
 const EDGE_PAD = 12;     // keep this far from a window that covers part of an edge
 const MIN_SEGMENT = 40;  // a visible stretch of edge must be at least this wide (px at size 1)
+const CLIMB_AT_WALL = 0.5; // meeting a climbable window while on the move: climb it half the time
 const MOUSE_CHANCE = 0.2; // 1 in 5 walks/runs head for the mouse pointer (unless an app is full screen)
 
 // Animation playback rates chosen so feet roughly match ground speed.
@@ -437,31 +438,26 @@ class Brain extends EventEmitter {
     return best;
   }
 
-  // Bumped into a window: climb it (personality-dependent) or look up at it and go back.
+  // Ran into the side of a window while on the move (walking, running, hopping, stalking), whichever
+  // layer it is on: a straight 50/50, and he never stops either way. Half the time he starts climbing
+  // it on the spot; otherwise he turns round and carries on the other way at the same pace.
   _hitWall(wall, dir, travel = null) {
     this._clear();
     this.x = wall.sx - dir * 16 * this.size - this.W / 2; // just short of the edge, whichever side
     this.y = this.standY();
     this._commit();
     const t = this._climbInfo(wall.w, wall.side);
-    const c = this.p.moves.climb || 0;
-    const climbChance = Math.min(0.92, Math.max(0.5, c / (c + 1))); // bumping into a climbable window: usually climbs it
     this.emit('wall', { window: wall.w.id, climbable: !!t });
-    if (t && this.surface.kind === 'ground' && Math.random() < climbChance) { this._climbUp(t); return; }
-    this._setMode('idle', { name: 'mirando_arriba', wall: true });
-    this.facing = dir < 0 ? 'left' : 'right';
-    this._anim('mirando_arriba', 2);
-    this._after(1100, () => {
-      const back = -dir;
-      const [lo, hi] = this.xBounds();
-      const room = back < 0 ? this.x - lo : hi - this.x;
-      const dist = Math.min(room, rand(150, 450) * this.size);
-      const tr = travel && travel.mode !== 'walk' && travel.mode !== 'run' ? null : travel;
-      const s = this.p.walkSpeed;
-      this._travelTo(this.x + back * Math.max(dist, 20), tr || {
-        mode: 'walk', anim: 'caminando', animSpeed: WALK_ANIM * s, speed: WALK_SPEED * s * this.size,
-      });
-    });
+    if (t && this.surface.kind === 'ground' && Math.random() < CLIMB_AT_WALL) { this._climbUp(t); return; }
+    const back = -dir;
+    const [lo, hi] = this.xBounds();
+    const room = back < 0 ? this.x - lo : hi - this.x;
+    const dist = Math.min(room, rand(150, 450) * this.size);
+    const s = this.p.walkSpeed;
+    const spec = travel && (travel.mode === 'walk' || travel.mode === 'run') ? travel : {
+      mode: 'walk', anim: 'caminando', animSpeed: WALK_ANIM * s, speed: WALK_SPEED * s * this.size,
+    };
+    this._travelTo(this.x + back * Math.max(dist, 20), spec);
   }
 
   // Can Tito climb this side of window w and stand on top? Returns a climb target or null.
