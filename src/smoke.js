@@ -109,7 +109,7 @@ async function run({ app, petWin, brain, settings, openSettings, getPopup, getSe
   const js = code => wc.executeJavaScript(code);
   const settle = async () => { brain.mode = 'idle'; brain.idle({ forever: true }); await wait(500); };
   const wa = screen.getPrimaryDisplay().workArea;
-  const timeout = setTimeout(() => { console.log('SMOKE TIMEOUT'); app.exit(2); }, 330000);
+  const timeout = setTimeout(() => { console.log('SMOKE TIMEOUT'); app.exit(2); }, 700000);
 
   await new Promise(r => wc.once('did-finish-load', r));
   await wait(1500);
@@ -287,12 +287,55 @@ async function run({ app, petWin, brain, settings, openSettings, getPopup, getSe
   }
   check('climbs up (escalando) and ends on the window top', sawClimb && brain.surface.kind === 'window', `surface=${brain.surface.kind}`);
 
+  // Overlapping windows (the real layout that looked wrong): a window behind that sticks up above the
+  // front one means the front one's edge is "inside" it, so he must not stand there.
+  const settingsWin2 = { id: 31, pid: 31, x: -188, y: wa.y + 359, w: 723, h: 512 };    // front
+  const finderWin = { id: 32, pid: 32, x: -259, y: wa.y + 304, w: 920, h: 429 };        // behind, 55pt higher
+  const notesWin = { id: 33, pid: 33, x: 280, y: wa.y + 54, w: 1000, h: 660 };          // in front of Finder's right part
+  brain.setWindows([settingsWin2, notesWin, finderWin]);
+  check('front window with another window sticking up behind it is not standable', !brain._standable(settingsWin2, 300) && !brain._standable(settingsWin2, 100));
+  check("the window behind is standable where nothing is above its edge", brain._standable(finderWin, 100));
+  check('...but not where a window covers the space above it', !brain._standable(finderWin, 400));
+  brain.setWindows([]);
+
   // A window edge hidden behind a window in front is not climbable.
   const front = { id: 11, pid: 95, x: wa.x + 200, y: wa.y + 200, w: 700, h: 600 };
   const back = { id: 12, pid: 94, x: wa.x + 300, y: wa.y + 195, w: 300, h: 600 };
   brain.setWindows([front, back]);
   check('edges hidden behind a front window are not climbable', !brain._climbInfo(back, 'left') && !brain._climbInfo(back, 'right') && !!brain._climbInfo(front, 'left'));
   brain.setWindows([]);
+
+  // ---- feet exactly on the surface, at every size and in every pose ----
+  const sizeProblems = [];
+  const sizeWin = { id: 41, pid: 41, x: wa.x + 250, y: wa.y + 340, w: 700, h: 300 };
+  for (const size of [0.5, 0.75, 1, 1.5, 2]) {
+    settings.set('size', size);
+    await wait(500);
+    brain.setWindows([sizeWin]);
+    await settle();
+    brain.surface = { kind: 'ground' }; // so "landed" really means landed on the window this time
+    brain.dragStart();
+    brain.dragMove(sizeWin.x + 350 - brain.W / 2, sizeWin.y - 120 - brain.H);
+    brain.dragEnd();
+    for (let i = 0; i < 60 && !(brain.surface.kind === 'window' && brain.mode !== 'fall'); i++) await wait(50);
+    await wait(150);
+    if (brain.surface.kind !== 'window') { sizeProblems.push(`${size}: did not land`); continue; }
+    for (const anim of ['sentado', 'caminando', 'escalando', 'saltando', 'durmiendo']) {
+      await js(`titoPlayer.play('${anim}', { facing: 'left' })`);
+      await wait(120);
+      const m = await js(`(() => { const i = document.getElementById('tito').getBoundingClientRect(); return { bottom: i.bottom, inner: innerHeight, hh: i.height }; })()`);
+      const b = petWin.getBounds();
+      // Where the paws really are on screen (window top + sprite bottom inside it; includes any "lift"
+      // used when a tall window would poke above the menu bar) versus the window's top edge.
+      const err = (b.y + m.bottom) - sizeWin.y;
+      if (Math.abs(err) > 1) sizeProblems.push(`${size}/${anim}: paws ${err > 0 ? 'below' : 'above'} the edge by ${err.toFixed(1)}`);
+    }
+  }
+  check('feet sit exactly on a window top at sizes 0.5 / 0.75 / 1 / 1.5 / 2 in every pose', sizeProblems.length === 0, sizeProblems.join('; '));
+  settings.set('size', 1);
+  await wait(500);
+  brain.setWindows([]);
+  await settle();
 
   // ---- teleport ----
   await settle();

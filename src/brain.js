@@ -109,7 +109,15 @@ class Brain extends EventEmitter {
     if (px < w.x + LEDGE_INSET || px > w.x + w.w - LEDGE_INSET) return false;
     const a = screen.getDisplayNearestPoint({ x: Math.round(px), y: Math.round(w.y) }).workArea;
     if (w.y < a.y + HEADROOM * this.size || w.y > a.y + a.height - 20) return false; // no headroom / below floor
-    return !this._occluded(idx, px, w.y);
+    if (this._occluded(idx, px, w.y)) return false;
+    // Nothing may sit directly above the edge, in front of OR behind this window. Otherwise he would
+    // stand "inside" another window that sticks up past this one (e.g. a Finder window peeking out
+    // above System Settings) instead of on top of the stack.
+    const above = w.y - 8;
+    for (const o of this.windows) {
+      if (o !== w && px >= o.x && px < o.x + o.w && above >= o.y && above < o.y + o.h) return false;
+    }
+    return true;
   }
   // Top of the surface Tito currently stands on.
   surfaceTop() {

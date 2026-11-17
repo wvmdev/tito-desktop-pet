@@ -666,6 +666,7 @@ app.whenReady().then(() => {
   if (isMac && app.dock) app.dock.hide();
   serveAppFiles();
   settings = new Settings();
+  if (process.env.TITO_DEV_SIZE) settings.data.size = +process.env.TITO_DEV_SIZE; // dev: try a size without touching the saved one
   secrets = new SecretStore();
   settings.on('change', (key, value) => {
     if (key === 'personality' && brain) brain.setPersonality(value);
@@ -698,6 +699,9 @@ app.whenReady().then(() => {
     }).catch(e => { console.log('SMOKE ERROR', e && e.stack); app.exit(3); });
   }
   if (process.env.TITO_RECORD) require('./record').run({ app, petWin, brain });
+  // Dev: TITO_PROBE=1 logs Electron's idea of the pet window every second (to compare with the system's).
+  if (process.env.TITO_PROBE_EDGE) setTimeout(() => { brain.setStay('sentado'); brain.x = -9999; brain._commit(); console.log('EDGE forced, brain.x =', brain.x); }, 3000);
+  if (process.env.TITO_PROBE) setInterval(() => { const b = petWin.getBounds(); console.log('PROBE', Date.now(), `${b.x},${b.y} ${b.width}x${b.height}`, brain.mode, brain.anim, `size=${settings.get('size')}`); }, 1000);
   if (process.env.TITO_TRIAL) {
     brain.setStay('sentado');
     require('./trial').run({
