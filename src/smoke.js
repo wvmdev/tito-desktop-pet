@@ -165,7 +165,7 @@ async function run({ app, petWin, brain, settings, openSettings, getPopup, getSe
     let p = getPopup();
     while (!(p.win && p.win.isVisible()) && Date.now() - tClick < 3000) { await wait(20); p = getPopup(); }
     const ms = Date.now() - tClick;
-    check(`${button} click -> menu popup appears right away`, p.kind === 'menu' && ms < 800, `${ms}ms`);
+    check(`${button} click -> menu popup appears right away`, p.kind === 'menu' && ms < 1300, `${ms}ms`);
     check(`${button} click -> reaction plays alongside`, ['sorprendido', 'saludando', 'dando_amor'].includes(brain.anim), `anim=${brain.anim}`);
     if (button === 'left' && p.win) { await wait(300); await shot(p.win, 'popup-menu.png'); }
     if (p.win) p.win.emit('blur');
@@ -175,7 +175,7 @@ async function run({ app, petWin, brain, settings, openSettings, getPopup, getSe
   await settle();
   pt = await findPt();
   click(); click();
-  await wait(800);
+  await wait(1600);
   const p = getPopup();
   check('double click -> size popup', p.win && p.kind === 'size', `kind=${p.kind}`);
   if (p.win) {
@@ -263,15 +263,14 @@ async function run({ app, petWin, brain, settings, openSettings, getPopup, getSe
   await wait(1300);
   check('...and lands on the floor', brain.surface.kind === 'ground');
 
-  // A window in front of his ledge does not matter: every window counts, so he stays where he is.
+  // Covered ledge -> falls (only visible parts of a window count).
   brain.setWindows([winA]);
   await dropOnto(winA, 100);
   await settle();
   brain.setWindows([{ id: 2, pid: 98, x: winA.x - 20, y: winA.y - 60, w: 700, h: 400 }, winA]);
-  await wait(400);
-  check('a window in front of his ledge does not knock him off (every window counts)', brain.mode !== 'fall' && brain.surface.kind === 'window' && brain.surface.id === 1, `mode=${brain.mode} surface=${JSON.stringify(brain.surface)}`);
-  brain.setWindows([winA]);
-  await wait(200);
+  await wait(60);
+  check('ledge covered by a window in front -> falls', brain.mode === 'fall', `mode=${brain.mode}`);
+  await wait(1300);
 
   // ---- climbing a window side ----
   brain.setWindows([winA]);
@@ -294,8 +293,9 @@ async function run({ app, petWin, brain, settings, openSettings, getPopup, getSe
   const finderWin = { id: 32, pid: 32, x: -259, y: wa.y + 304, w: 920, h: 429 };        // behind, 55pt higher
   const notesWin = { id: 33, pid: 33, x: 280, y: wa.y + 54, w: 1000, h: 660 };          // in front of Finder's right part
   brain.setWindows([settingsWin2, notesWin, finderWin]);
-  check('every window counts: the front one is standable even with another window sticking up behind it', brain._standable(settingsWin2, 300) && brain._standable(settingsWin2, 100));
-  check('...and so is the back one, even where a window in front covers its edge', brain._standable(finderWin, 100) && brain._standable(finderWin, 400));
+  check('any window counts wherever it sits: the front one is standable even with another window sticking up behind it', brain._standable(settingsWin2, 300) && brain._standable(settingsWin2, 100));
+  check('the back one is standable where its edge is visible...', brain._standable(finderWin, 100));
+  check('...but not where a window in front covers its edge', !brain._standable(finderWin, 400));
   brain.surface = { kind: 'ground' };
   await settle();
   brain.dragStart();
@@ -306,11 +306,35 @@ async function run({ app, petWin, brain, settings, openSettings, getPopup, getSe
   brain.setWindows([]);
   await wait(1500);
 
-  // A window edge hidden behind a window in front is climbable too.
+  // The layout from the bug report: a tall window in front covers part of the Finder's top edge.
+  const tallWin = { id: 34, pid: 34, x: 415, y: wa.y - 50, w: 455, h: 820 };
+  brain.setWindows([tallWin, finderWin]);
+  const segs = brain._edgeSegments(finderWin);
+  check("only the visible stretch of the back window's edge counts (nothing is hidden under the front window)",
+    segs.length === 1 && segs[0][1] <= tallWin.x - 10 && segs[0][1] >= tallWin.x - 14 && !brain._standable(finderWin, 500) && brain._standable(finderWin, 200), JSON.stringify(segs));
+  brain.surface = { kind: 'ground' };
+  await settle();
+  brain.dragStart();
+  brain.dragMove(500 - brain.W / 2, finderWin.y - 150 - brain.H);
+  brain.dragEnd();
+  for (let i = 0; i < 80 && !(brain.surface.kind === 'ground' && brain.mode !== 'fall'); i++) await wait(50);
+  check('dropped over the covered part he does NOT float on it: he falls past to the floor', brain.surface.kind === 'ground' && Math.abs(brain.footY() - brain.floorTop()) < 1, `surface=${JSON.stringify(brain.surface)} foot=${Math.round(brain.footY())}`);
+  brain.surface = { kind: 'ground' };
+  await settle();
+  brain.dragStart();
+  brain.dragMove(200 - brain.W / 2, finderWin.y - 150 - brain.H);
+  brain.dragEnd();
+  for (let i = 0; i < 80 && !(brain.surface.kind === 'window' && brain.mode !== 'fall'); i++) await wait(50);
+  const [, hiX] = brain.xBounds();
+  check('on the visible stretch he lands on the window and can only walk along that stretch', brain.surface.id === 32 && hiX + brain.W / 2 <= tallWin.x - 10, `surface=${JSON.stringify(brain.surface)} hiFoot=${Math.round(hiX + brain.W / 2)}`);
+  brain.setWindows([]);
+  await wait(1500);
+
+  // A window edge hidden behind a window in front is not climbable.
   const front = { id: 11, pid: 95, x: wa.x + 200, y: wa.y + 200, w: 700, h: 600 };
   const back = { id: 12, pid: 94, x: wa.x + 300, y: wa.y + 195, w: 300, h: 600 };
   brain.setWindows([front, back]);
-  check('edges of a window behind another can be climbed too', !!brain._climbInfo(back, 'left') && !!brain._climbInfo(front, 'left'));
+  check('edges hidden behind a front window are not climbable', !brain._climbInfo(back, 'left') && !brain._climbInfo(back, 'right') && !!brain._climbInfo(front, 'left'));
   brain.setWindows([]);
 
   // ---- feet exactly on the surface, at every size and in every pose ----

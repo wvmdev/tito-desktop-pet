@@ -23,6 +23,8 @@ const MAX_FALL = 2200;
 const LEDGE_INSET = 28;  // keep Tito's feet this far inside a window's top edge
 const SNAP_UP = 40;      // dropped this close below a window top -> stand on it
 const HEADROOM = 135;    // px above a window top needed for Tito's body (sitting height at size 1)
+const EDGE_PAD = 12;     // keep this far from a window that covers part of an edge
+const MIN_SEGMENT = 40;  // a visible stretch of edge must be at least this wide (px at size 1)
 const MOUSE_CHANCE = 0.2; // 1 in 5 walks/runs head for the mouse pointer (unless an app is full screen)
 
 // Animation playback rates chosen so feet roughly match ground speed.
@@ -95,16 +97,43 @@ class Brain extends EventEmitter {
   floorTop() { const a = this.area(); return a.y + a.height; }
 
   _win(id) { return this.windows.find(w => w.id === id); }
-  // Is (px, window top) a standable spot on window `w`? Every window counts as a surface, wherever it
-  // sits in the stacking order (he is always drawn in front, so a window hidden behind others still
-  // works): only room above the edge, the ledge inset and the floor limit it.
-  _standable(w, px) {
+  // Windows are listed front to back. A point of window `idx` is visible only if no window in front of
+  // it (index < idx) covers it: hidden parts of a window don't count for anything.
+  _occluded(idx, px, py) {
+    for (let i = 0; i < idx; i++) {
+      const w = this.windows[i];
+      if (px >= w.x && px < w.x + w.w && py >= w.y - 2 && py < w.y + w.h) return true;
+    }
+    return false;
+  }
+
+  // The stretches of window `w`'s top edge that are actually visible (not covered by a window in
+  // front), as [x0, x1] screen intervals inset from the corners and from the covering windows. Any
+  // window counts wherever it sits in the stack; only what you can see counts.
+  _edgeSegments(w) {
     const idx = this.windows.indexOf(w);
-    if (idx < 0) return false;
-    if (px < w.x + LEDGE_INSET || px > w.x + w.w - LEDGE_INSET) return false;
+    if (idx < 0) return [];
+    const a = this.area();
+    let segs = [[Math.max(w.x + LEDGE_INSET, a.x), Math.min(w.x + w.w - LEDGE_INSET, a.x + a.width)]];
+    for (let i = 0; i < idx; i++) {
+      const o = this.windows[i];
+      if (!(o.y <= w.y + 1 && o.y + o.h > w.y + 1)) continue; // doesn't reach this edge's height
+      const c0 = o.x - EDGE_PAD, c1 = o.x + o.w + EDGE_PAD;
+      segs = segs.flatMap(([s0, s1]) => (c1 <= s0 || c0 >= s1 ? [[s0, s1]] : [[s0, Math.min(s1, c0)], [Math.max(s0, c1), s1]]));
+    }
+    return segs.filter(([x0, x1]) => x1 - x0 >= MIN_SEGMENT * this.size);
+  }
+
+  // Enough room above a window top for his body, and not below the floor?
+  _edgeHeightOk(w, px) {
     const a = screen.getDisplayNearestPoint({ x: Math.round(px), y: Math.round(w.y) }).workArea;
-    if (w.y < a.y + HEADROOM * this.size || w.y > a.y + a.height - 20) return false; // no headroom / below floor
-    return true;
+    return !(w.y < a.y + HEADROOM * this.size || w.y > a.y + a.height - 20);
+  }
+
+  // Is (px, window top) a standable spot on window `w`: visible, with headroom?
+  _standable(w, px) {
+    if (this.windows.indexOf(w) < 0 || !this._edgeHeightOk(w, px)) return false;
+    return this._edgeSegments(w).some(([x0, x1]) => px >= x0 && px <= x1);
   }
   // Top of the surface Tito currently stands on.
   surfaceTop() {
@@ -131,8 +160,12 @@ class Brain extends EventEmitter {
     if (this.surface.kind === 'window' && this._standsOnSurface()) {
       const w = this._win(this.surface.id);
       if (w) {
-        lo = Math.max(lo, w.x + LEDGE_INSET - this.W / 2);
-        hi = Math.min(hi, w.x + w.w - LEDGE_INSET - this.W / 2);
+        // Stay on the visible stretch of the edge he is standing on.
+        const fx = this.footX();
+        const segs = this._edgeSegments(w);
+        let seg = segs.find(([x0, x1]) => fx >= x0 - 1 && fx <= x1 + 1);
+        if (!seg && segs.length) seg = segs.reduce((b, c) => (Math.abs((c[0] + c[1]) / 2 - fx) < Math.abs((b[0] + b[1]) / 2 - fx) ? c : b));
+        if (seg) { lo = Math.max(lo, seg[0] - this.W / 2); hi = Math.min(hi, seg[1] - this.W / 2); }
       }
     }
     return [lo, Math.max(lo, hi)];
@@ -375,10 +408,10 @@ class Brain extends EventEmitter {
   }
 
   // ---------- windows in the way: climb them or turn back ----------
-  // Any vertical window edge Tito reaches counts as a wall, whether he arrives from outside the window
-  // or walks in front of it (windows often reach down behind the Dock), and wherever the window sits
-  // in the stacking order: every window counts. An edge counts when the window overlaps his body
-  // height there. Returns the nearest edge crossed as the feet moved fx0->fx1.
+  // Any visible vertical window edge Tito reaches counts as a wall, whether he arrives from outside the
+  // window or walks in front of it (windows often reach down behind the Dock), wherever the window sits
+  // in the stacking order; parts of a side hidden behind another window don't count. An edge counts when
+  // the window overlaps his body height there. Returns the nearest edge crossed as the feet moved fx0->fx1.
   _wallCrossed(fx0, fx1, ignoreId = null) {
     if (fx0 === fx1) return null;
     const fy = this.footY();
@@ -387,7 +420,7 @@ class Brain extends EventEmitter {
     const a = this.area();
     const right = fx1 > fx0;
     let best = null;
-    this.windows.forEach(w => {
+    this.windows.forEach((w, i) => {
       if (this.surface.kind === 'window' && w.id === this.surface.id) return;
       if (w.id === ignoreId) return;
       if (w.y > bandBot || w.y + w.h < bandTop) return;
@@ -396,6 +429,8 @@ class Brain extends EventEmitter {
         if (sx < a.x + 20 || sx > a.x + a.width - 20) continue; // edge off-screen
         const crossed = right ? fx0 < sx && fx1 >= sx : fx0 > sx && fx1 <= sx;
         if (!crossed) continue;
+        const py = Math.min(w.y + w.h - 1, Math.max(w.y + 1, fy - 40 * this.size));
+        if (this._occluded(i, side === 'left' ? sx + 1 : sx - 1, py)) continue; // that part of the side is hidden
         if (!best || Math.abs(sx - fx0) < Math.abs(best.sx - fx0)) best = { w, side, sx };
       }
     });
@@ -410,7 +445,7 @@ class Brain extends EventEmitter {
     this._commit();
     const t = this._climbInfo(wall.w, wall.side);
     const c = this.p.moves.climb || 0;
-    const climbChance = Math.min(0.8, Math.max(0.15, c / (c + 2)));
+    const climbChance = Math.min(0.92, Math.max(0.5, c / (c + 1))); // bumping into a climbable window: usually climbs it
     this.emit('wall', { window: wall.w.id, climbable: !!t });
     if (t && this.surface.kind === 'ground' && Math.random() < climbChance) { this._climbUp(t); return; }
     this._setMode('idle', { name: 'mirando_arriba', wall: true });
@@ -437,6 +472,11 @@ class Brain extends EventEmitter {
     if (sx < a.x + 40 || sx > a.x + a.width - 40) return null;
     const landX = side === 'left' ? w.x + LEDGE_INSET + 20 : w.x + w.w - LEDGE_INSET - 20;
     if (!this._standable(w, landX)) return null;
+    // The side he climbs must be visible all the way up: no climbing "inside" a window in front of it.
+    const idx = this.windows.indexOf(w);
+    const edgeX = side === 'left' ? sx + 1 : sx - 1;
+    const bottom = Math.min(w.y + w.h, this.floorTop()) - 4;
+    for (let y = w.y + 4; y <= bottom; y += 30) if (this._occluded(idx, edgeX, y)) return null;
     return { w, side, sx, landX };
   }
 
@@ -503,11 +543,14 @@ class Brain extends EventEmitter {
     this._after(ms, () => {
       const a = this.area();
       const spots = [{ kind: 'ground' }];
-      for (const w of this.windows) if (this._standable(w, w.x + w.w / 2)) spots.push({ kind: 'window', id: w.id });
+      for (const w of this.windows) {
+        const segs = this._edgeSegments(w).filter(([x0, x1]) => this._edgeHeightOk(w, (x0 + x1) / 2));
+        if (segs.length) spots.push({ kind: 'window', id: w.id, segs });
+      }
       const spot = pick(spots);
       if (spot.kind === 'window') {
-        const w = this._win(spot.id);
-        this.x = rand(w.x + LEDGE_INSET, w.x + w.w - LEDGE_INSET) - this.W / 2;
+        const seg = pick(spot.segs);
+        this.x = rand(seg[0], seg[1]) - this.W / 2;
       } else {
         this.x = rand(a.x, a.x + a.width - this.W);
       }

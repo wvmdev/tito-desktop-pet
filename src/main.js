@@ -720,7 +720,7 @@ app.whenReady().then(() => {
       clearInterval(iv);
       console.log('DROP onto', JSON.stringify(w));
       brain.dragStart();
-      brain.dragMove(w.x + w.w / 2 - brain.W / 2, w.y - 150 - brain.H);
+      brain.dragMove((+process.env.TITO_DEV_DROP_X || (w.x + w.w / 2)) - brain.W / 2, w.y - 250 - brain.H);
       brain.dragEnd();
       setTimeout(async () => {
         const r = await petWin.webContents.executeJavaScript('(() => { const i = document.getElementById("tito").getBoundingClientRect(); return { imgTop: i.top, imgBottom: i.bottom, imgH: i.height, innerH: innerHeight, anim: titoPlayer.name, frame: titoPlayer.frame, nat: document.getElementById("tito").naturalHeight, style: document.getElementById("tito").style.height }; })()');
