@@ -8,7 +8,7 @@ const { spawn, execFile } = require('child_process');
 const { pathToFileURL } = require('url');
 const { Brain } = require('./brain');
 const { Settings, SIZE_MIN, SIZE_MAX } = require('./settings');
-const { personalityList, STAY_POSES } = require('./personalities');
+const { personalityList, STAY_POSES, EMOTIONS, EMOTION_INFO } = require('./personalities');
 const { Mood } = require('./mood');
 const { SecretStore } = require('./ai/secrets');
 const { createProvider, normalizeError, PROVIDERS, providerList } = require('./ai/providers');
@@ -33,7 +33,7 @@ protocol.registerSchemesAsPrivileged([
 ]);
 
 // Dev runs (smoke test / recorder) use a throwaway profile so they never touch real settings.
-if (process.env.TITO_SMOKE || process.env.TITO_RECORD || process.env.TITO_SHOT || process.env.TITO_DEV_DROP || process.env.TITO_TRIAL) {
+if (process.env.TITO_SMOKE || process.env.TITO_RECORD || process.env.TITO_SHOT || process.env.TITO_DEV_DROP || process.env.TITO_TRIAL || process.env.TITO_DEV || process.env.TITO_SHOT_PERS) {
   const real = app.getPath('userData');
   const tmp = path.join(require('os').tmpdir(), `tito-dev-${process.pid}`);
   app.setPath('userData', tmp);
@@ -45,7 +45,7 @@ if (process.env.TITO_SMOKE || process.env.TITO_RECORD || process.env.TITO_SHOT |
 }
 
 // One Tito at a time: launching again just brings the existing one's Settings forward.
-const DEV_RUN = !!(process.env.TITO_SMOKE || process.env.TITO_RECORD || process.env.TITO_SHOT || process.env.TITO_DEV_DROP || process.env.TITO_TRIAL);
+const DEV_RUN = !!(process.env.TITO_SMOKE || process.env.TITO_RECORD || process.env.TITO_SHOT || process.env.TITO_DEV_DROP || process.env.TITO_TRIAL || process.env.TITO_DEV || process.env.TITO_SHOT_PERS);
 if (!DEV_RUN && !app.requestSingleInstanceLock()) app.exit(0);
 app.on('second-instance', () => { if (settings) openSettings(); });
 
@@ -132,6 +132,7 @@ function createPetWindow() {
     getCursor: () => screen.getCursorScreenPoint(),
     play: anim => petWin && !petWin.isDestroyed() && petWin.webContents.send('pet:play', anim),
     personality: settings.get('personality'),
+    getCustoms: () => settings.get('customPersonalities'),
   });
   const b = petWin.getBounds();
   brain.placeAt(b.x, b.y);
@@ -362,8 +363,9 @@ function registerIpc() {
   ipcMain.handle('settings:get', e => {
     if (!fromSettings(e)) throw new Error('denied');
     return {
-      settings: settings.all(), personalities: personalityList(), sizeRange: [SIZE_MIN, SIZE_MAX],
+      settings: settings.all(), personalities: personalityList(settings.get('customPersonalities')), sizeRange: [SIZE_MIN, SIZE_MAX],
       stayPoses: STAY_POSES, mood: mood && mood.summary(), ai: aiStatus(), tasks: scheduler.list(),
+      emotions: EMOTIONS.map(id => ({ id, ...EMOTION_INFO[id] })),
       security: { levels: LEVELS, toggles: PERM_TOGGLES },
     };
   });
@@ -670,6 +672,7 @@ app.whenReady().then(() => {
   secrets = new SecretStore();
   settings.on('change', (key, value) => {
     if (key === 'personality' && brain) brain.setPersonality(value);
+    if (key === 'customPersonalities' && brain) brain.setPersonality(settings.get('personality')); // an edit to the one in use applies at once
     if (key === 'securityLevel' && value === 'lockdown' && chat && chat.busy) stopTask();
     if (['aiProvider', 'aiModels'].includes(key) && chatWin && !chatWin.isDestroyed()) chatWin.webContents.send('chat:status', chatStatus());
     if (settingsWin && !settingsWin.isDestroyed() && key !== 'size') settingsWin.webContents.send('settings:changed', settings.all());
@@ -729,6 +732,25 @@ app.whenReady().then(() => {
     }, 300);
   }
   // Dev: TITO_SHOT=<dir> [TITO_SHOT_PROVIDERS=groq,custom,...] screenshots the AI section of Settings.
+  if (process.env.TITO_SHOT_PERS) {
+    settings.set('customPersonalities', [{ label: 'Cloud chaser', emotions: { happy: 40, calm: 20, curious: 30, scared: 10 }, activity: 70, speed: 60, climb: 80 }]);
+    settings.set('personality', settings.get('customPersonalities')[0].id);
+    openSettings();
+    setTimeout(async () => {
+      const wc = settingsWin.webContents;
+      const shot = async name => require('fs').writeFileSync(path.join(process.env.TITO_SHOT_PERS, name), (await wc.capturePage()).toPNG());
+      await wc.executeJavaScript(`document.querySelector('h2').scrollIntoView({ block: 'start' })`);
+      await new Promise(r => setTimeout(r, 400));
+      await shot('pers-1.png');
+      await wc.executeJavaScript(`window.scrollBy(0, 420)`);
+      await new Promise(r => setTimeout(r, 400));
+      await shot('pers-2.png');
+      await wc.executeJavaScript(`document.querySelector('.cardbtns button').click(); document.getElementById('editor').scrollIntoView({ block: 'start' })`);
+      await new Promise(r => setTimeout(r, 700));
+      await shot('pers-3.png');
+      app.exit(0);
+    }, 2200);
+  }
   if (process.env.TITO_SHOT) {
     openSettings();
     setTimeout(async () => {

@@ -8,7 +8,7 @@
 // Modes: walk | run | hop | stalk | climb | teleport | idle | react | menu | held | fall | land | sleep | wake
 const { screen } = require('electron');
 const EventEmitter = require('events');
-const { PERSONALITIES, DEFAULT_PERSONALITY } = require('./personalities');
+const { PERSONALITIES, DEFAULT_PERSONALITY, resolvePersonality } = require('./personalities');
 const SPRITE = require('./sprite-metrics'); // visible extent of every animation (tools/metrics.js)
 
 const FRAME_MS = 550;
@@ -49,13 +49,14 @@ function pickWeighted(entries) {
 }
 
 class Brain extends EventEmitter {
-  constructor({ width, height, setPosition, play, getCursor = null, personality = DEFAULT_PERSONALITY, size = 1 }) {
+  constructor({ width, height, setPosition, play, getCursor = null, personality = DEFAULT_PERSONALITY, getCustoms = () => [], size = 1 }) {
     super();
     this.W = width;
     this.H = height;
     this.size = size;
     this._setPos = setPosition;
     this.getCursor = getCursor; // () => { x, y } screen point of the mouse pointer
+    this.getCustoms = getCustoms; // () => the user's custom personalities
     this._play = play;
     this.mode = 'init';
     this.facing = 'left';
@@ -74,8 +75,9 @@ class Brain extends EventEmitter {
   }
 
   setPersonality(id) {
-    this.personalityId = PERSONALITIES[id] ? id : DEFAULT_PERSONALITY;
-    this.p = PERSONALITIES[this.personalityId];
+    const p = resolvePersonality(id, this.getCustoms());
+    this.personalityId = p ? id : DEFAULT_PERSONALITY;
+    this.p = p || PERSONALITIES[DEFAULT_PERSONALITY];
     if (this._autonomous()) this._after(600, () => this.next());
   }
 

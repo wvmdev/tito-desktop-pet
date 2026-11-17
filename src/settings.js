@@ -4,7 +4,7 @@ const { app } = require('electron');
 const fs = require('fs');
 const path = require('path');
 const EventEmitter = require('events');
-const { PERSONALITIES, DEFAULT_PERSONALITY, STAY_POSES } = require('./personalities');
+const { PERSONALITIES, DEFAULT_PERSONALITY, STAY_POSES, cleanCustoms } = require('./personalities');
 const { LEVELS, DEFAULT_PERMS, validatePerms } = require('./ai/permissions');
 const { DEFAULT_MODELS, PROVIDER_IDS } = require('./ai/providers');
 const { validateTasks } = require('./tasks');
@@ -25,6 +25,7 @@ const SIZE_MIN = 0.5;
 const SIZE_MAX = 2;
 const DEFAULTS = {
   personality: DEFAULT_PERSONALITY,
+  customPersonalities: [], // the user's own personalities (emotion mixes), see personalities.js
   size: 1,
   stayStill: false,
   stayPose: 'sentado',
@@ -42,7 +43,8 @@ const DEFAULTS = {
 };
 
 const VALIDATORS = {
-  personality: v => (PERSONALITIES[v] ? v : null),
+  personality: v => (PERSONALITIES[v] || (typeof v === 'string' && /^c-[a-z0-9]{4,12}$/.test(v)) ? v : null),
+  customPersonalities: v => cleanCustoms(v),
   size: v => (typeof v === 'number' && Number.isFinite(v)
     ? Math.round(Math.min(SIZE_MAX, Math.max(SIZE_MIN, v)) * 100) / 100 : null),
   stayStill: v => (typeof v === 'boolean' ? v : null),
@@ -85,6 +87,10 @@ class Settings extends EventEmitter {
       const v = k in saved ? VALIDATORS[k](saved[k]) : null;
       if (v !== null) this.data[k] = v;
     }
+    // A saved custom personality that no longer exists falls back to the default.
+    if (!PERSONALITIES[this.data.personality] && !this.data.customPersonalities.some(c => c.id === this.data.personality)) {
+      this.data.personality = DEFAULT_PERSONALITY;
+    }
     this._saveTimer = null;
   }
 
@@ -95,8 +101,14 @@ class Settings extends EventEmitter {
     if (!(key in VALIDATORS)) throw new Error(`Unknown setting: ${key}`);
     const v = VALIDATORS[key](value);
     if (v === null) throw new Error(`Invalid value for ${key}`);
+    if (key === 'personality' && !PERSONALITIES[v] && !this.data.customPersonalities.some(c => c.id === v)) throw new Error('Unknown personality');
     if (JSON.stringify(v) === JSON.stringify(this.data[key])) return;
     this.data[key] = v;
+    // Deleting the personality in use switches back to the default one.
+    if (key === 'customPersonalities' && !PERSONALITIES[this.data.personality] && !v.some(c => c.id === this.data.personality)) {
+      this.data.personality = DEFAULT_PERSONALITY;
+      this.emit('change', 'personality', DEFAULT_PERSONALITY);
+    }
     // Debounced write: the size slider fires many changes per second.
     clearTimeout(this._saveTimer);
     this._saveTimer = setTimeout(() => { this._saveTimer = null; this._write(); }, 300);

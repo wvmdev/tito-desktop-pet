@@ -1005,11 +1005,70 @@ async function run({ app, petWin, brain, settings, openSettings, getPopup, getSe
   settings.set('personality', 'sleepy');
   check('personality applied', brain.personalityId === 'sleepy');
   settings.set('personality', 'balanced');
+
+  // ---- custom personalities: engine + settings rules ----
+  const Pers = require('./personalities');
+  const sumMix = x => Object.values(x.mix).reduce((a, b) => a + b, 0);
+  check('every built-in personality shows an emotion mix that adds up to 100%', Pers.personalityList([]).length === 6 && Pers.personalityList([]).every(x => sumMix(x) === 100));
+  settings.set('customPersonalities', [{ label: 'Napper', emotions: { tired: 80, calm: 20 }, activity: 10, speed: 20, climb: 0 }]);
+  const cust = settings.get('customPersonalities')[0];
+  check('a custom personality is stored with an id and clean numbers', /^c-[a-z0-9]{4,12}$/.test(cust.id) && cust.emotions.tired === 80 && cust.emotions.happy === 0, JSON.stringify(cust));
+  let rejectedBad = 0;
+  for (const bad of [[{ label: '', emotions: { happy: 5 } }], [{ label: 'x', emotions: {} }], [{ label: 'x', emotions: { happy: 'a' } }], new Array(13).fill({ label: 'x', emotions: { happy: 1 } })]) {
+    try { settings.set('customPersonalities', bad); } catch { rejectedBad++; }
+  }
+  check('invalid custom personalities (no name, no emotion, not a number, more than 12) are rejected', rejectedBad === 4, `rejected=${rejectedBad}`);
+  settings.set('personality', cust.id);
+  check('the brain adopts it: tired poses, never climbs', brain.personalityId === cust.id && brain.p.label === 'Napper' && brain.p.moves.climb === 0
+    && brain.p.idle.some(([a]) => a === 'durmiendo') && !brain.p.idle.some(([a]) => a === 'jugando_pelota'));
+  const stat = Pers.personalityList(settings.get('customPersonalities')).find(x => x.id === cust.id);
+  check('its emotion % is what was set (80% tired, 20% calm) and adds up to 100', stat.mix.tired === 80 && stat.mix.calm === 20 && sumMix(stat) === 100 && stat.climbPct === 0, JSON.stringify(stat.mix));
+  const hiClimb = Pers.buildPersonality({ ...cust, climb: 100, emotions: { happy: 100 } });
+  const midClimb = Pers.buildPersonality({ ...cust, climb: 50, emotions: { happy: 100 } });
+  check('the climbing slider scales how often he climbs (0 never, 100 = x4)', hiClimb.moves.climb > midClimb.moves.climb * 3.9 && Pers.buildPersonality({ ...cust, climb: 0 }).moves.climb === 0);
+  settings.set('customPersonalities', [{ ...cust, label: 'Napper 2', emotions: { happy: 100 } }]);
+  check('editing the personality in use applies at once', brain.p.label === 'Napper 2' && brain.p.idle.some(([a]) => a === 'jugando_pelota') && !brain.p.idle.some(([a]) => a === 'durmiendo'));
+  settings.set('customPersonalities', []);
+  check('deleting the personality in use falls back to Balanced', settings.get('personality') === 'balanced' && brain.personalityId === 'balanced');
+  let bogus = false;
+  try { settings.set('personality', 'c-doesnotexist'); } catch { bogus = true; }
+  check('selecting a personality that does not exist is refused', bogus);
   openSettings();
   await wait(1500);
   const sw = getSettingsWin();
   const cards = sw && await sw.webContents.executeJavaScript('document.querySelectorAll("label.card").length');
   check('settings lists 6 personalities', cards === 6, `cards=${cards}`);
+  const cardInfo = await sw.webContents.executeJavaScript(`[...document.querySelectorAll("label.card")].map(c => ({ name: c.querySelector('.name').textContent, pcts: [...c.querySelectorAll('.legend b')].map(b => parseInt(b.textContent)), segs: c.querySelectorAll('.stackbar span').length }))`);
+  check('every personality card shows its emotion percentages (adding up to 100)', cardInfo.length === 6 && cardInfo.every(c => c.pcts.reduce((a, b) => a + b, 0) === 100 && c.segs === c.pcts.length), JSON.stringify(cardInfo.slice(0, 2)));
+  // Create, edit and delete a personality by clicking through the real page.
+  const swjs = code => sw.webContents.executeJavaScript(code);
+  const setRange = (id, v) => swjs(`(() => { const r = document.getElementById('${id}'); r.value = ${v}; r.dispatchEvent(new Event('input')); })()`);
+  await swjs(`document.getElementById('addPersonality').click()`);
+  await wait(300);
+  check('"Create your own personality" opens the editor', (await swjs(`!document.getElementById('editor').hidden`)) === true);
+  await swjs(`document.getElementById('pName').value = 'UI Cat'`);
+  for (const [e, v] of [['happy', 60], ['calm', 0], ['curious', 0], ['tired', 0], ['grumpy', 0], ['scared', 20]]) await setRange(`emo-${e}`, v);
+  await setRange('pClimb', 100);
+  const shown = await swjs(`[document.getElementById('emo-happy').nextSibling.textContent, document.getElementById('emo-scared').nextSibling.textContent, document.getElementById('pClimbV').textContent]`);
+  check('the editor shows live percentages that add up to 100 (60/20 -> 75% and 25%)', shown[0] === '75%' && shown[1] === '25%' && shown[2] === '100%', JSON.stringify(shown));
+  await swjs(`document.getElementById('pSave').click()`);
+  await wait(900);
+  const made = settings.get('customPersonalities');
+  check('saving creates it, selects it and puts it on the page', made.length === 1 && made[0].label === 'UI Cat' && made[0].climb === 100 && settings.get('personality') === made[0].id
+    && (await swjs(`document.querySelectorAll('label.card').length`)) === 7 && (await swjs(`document.querySelector('label.card:has(input:checked) .name').textContent`)) === 'UI Cat', JSON.stringify(made));
+  await swjs(`document.querySelector('.cardbtns button').click()`);
+  await wait(300);
+  await swjs(`document.getElementById('pName').value = 'UI Cat 2'`);
+  await swjs(`document.getElementById('pSave').click()`);
+  await wait(900);
+  check('editing renames it', settings.get('customPersonalities')[0].label === 'UI Cat 2' && settings.get('customPersonalities').length === 1);
+  await swjs(`document.querySelector('.cardbtns button').click()`);
+  await wait(300);
+  await swjs(`document.getElementById('pDelete').click()`);
+  check('deleting needs a second click', settings.get('customPersonalities').length === 1);
+  await swjs(`document.getElementById('pDelete').click()`);
+  await wait(900);
+  check('deleting removes it and goes back to Balanced', settings.get('customPersonalities').length === 0 && settings.get('personality') === 'balanced' && (await swjs(`document.querySelectorAll('label.card').length`)) === 6);
   const moodText = sw && await sw.webContents.executeJavaScript('document.getElementById("moodLabel").textContent');
   // Full Access needs the native warning dialog's explicit yes (stubbed here: Cancel, then Enable).
   const { dialog } = require('electron');

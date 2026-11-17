@@ -1,4 +1,4 @@
-// Settings window: personality picker + size (AI settings arrive in phase 5).
+// Settings window.
 const api = window.tito.settings;
 const ICON = {
   balanced: 'sentado', calm: 'tumbado', excited: 'jugando_pelota',
@@ -7,30 +7,133 @@ const ICON = {
 if (window.tito.platform !== 'darwin') document.body.classList.add('no-vibrancy');
 
 async function init() {
-  const { personalities, settings, sizeRange, stayPoses, mood, ai, security, tasks } = await api.get();
+  const { personalities, settings, sizeRange, stayPoses, mood, ai, security, tasks, emotions } = await api.get();
 
+  // ---- personalities: every one shows its emotion mix; the user can build their own ----
   const grid = document.getElementById('personalities');
-  for (const p of personalities) {
-    const label = document.createElement('label');
-    label.className = 'card glass';
-    const input = Object.assign(document.createElement('input'), {
-      type: 'radio', name: 'personality', value: p.id, checked: p.id === settings.personality,
-    });
-    const img = Object.assign(document.createElement('img'), {
-      src: `../../assets/sprites/${ICON[p.id]}/${ICON[p.id]}_0.png`, alt: '',
-    });
-    const text = document.createElement('div');
-    text.append(
-      Object.assign(document.createElement('div'), { className: 'name', textContent: p.label }),
-      Object.assign(document.createElement('div'), { className: 'desc', textContent: p.description }),
-    );
-    label.append(input, img, text);
-    input.addEventListener('change', async () => {
-      await api.set('personality', p.id);
-      document.getElementById('saved').textContent = `Tito is now ${p.label.toLowerCase()}.`;
-    });
-    grid.append(label);
+  const emoInfo = Object.fromEntries(emotions.map(e => [e.id, e]));
+  const percent = raw => { // whole percentages that add up to exactly 100
+    const ids = emotions.map(e => e.id);
+    const total = ids.reduce((t, k) => t + (raw[k] || 0), 0);
+    if (total <= 0) return Object.fromEntries(ids.map(k => [k, 0]));
+    const exact = ids.map(k => (100 * (raw[k] || 0)) / total);
+    const out = exact.map(Math.floor);
+    let left = 100 - out.reduce((a, b) => a + b, 0);
+    exact.map((x, i) => [x - Math.floor(x), i]).sort((a, b) => b[0] - a[0]).forEach(([, i]) => { if (left-- > 0) out[i]++; });
+    return Object.fromEntries(ids.map((k, i) => [k, out[i]]));
+  };
+  const el = (tag, props = {}, ...kids) => { const n = Object.assign(document.createElement(tag), props); n.append(...kids); return n; };
+  const mixBar = mix => el('div', { className: 'stackbar', title: emotions.map(e => `${e.label} ${mix[e.id]}%`).join(', ') },
+    ...emotions.filter(e => mix[e.id] > 0).map(e => { const sp = el('span'); sp.style.width = `${mix[e.id]}%`; sp.style.background = `var(--e-${e.id})`; return sp; }));
+  const legend = mix => el('div', { className: 'legend' },
+    ...emotions.filter(e => mix[e.id] > 0).map(e => el('span', {}, `${e.emoji} ${e.label} `, el('b', { textContent: `${mix[e.id]}%` }))));
+
+  let list = personalities;
+  let customs = settings.customPersonalities || [];
+  const saved = document.getElementById('saved');
+
+  function renderPersonalities() {
+    grid.replaceChildren(...list.map(p => {
+      const label = el('label', { className: 'card glass' });
+      const input = Object.assign(el('input'), { type: 'radio', name: 'personality', value: p.id, checked: p.id === settings.personality });
+      const icon = ICON[p.id] || 'sentado';
+      const img = el('img', { src: `../../assets/sprites/${icon}/${icon}_0.png`, alt: '' });
+      const text = el('div', {}, el('div', { className: 'name', textContent: p.label }), el('div', { className: 'desc', textContent: p.description }));
+      const mix = el('div', { className: 'mix' }, mixBar(p.mix), legend(p.mix),
+        el('div', { className: 'stats', textContent: `Moves ${p.movePct}% of the time · climbing is ${p.climbPct}% of his moves` }));
+      label.append(input, img, text, mix);
+      if (p.custom) {
+        const edit = el('button', { type: 'button', textContent: '✎', title: 'Edit' });
+        edit.setAttribute('aria-label', `Edit ${p.label}`);
+        edit.addEventListener('click', e => { e.preventDefault(); openEditor(p.params); });
+        label.append(el('div', { className: 'cardbtns' }, edit));
+      }
+      input.addEventListener('change', async () => {
+        Object.assign(settings, await api.set('personality', p.id));
+        saved.textContent = `Tito is now ${p.label.toLowerCase()}.`;
+      });
+      return label;
+    }));
   }
+  renderPersonalities();
+
+  async function refreshPersonalities() {
+    const fresh = await api.get();
+    list = fresh.personalities;
+    customs = fresh.settings.customPersonalities || [];
+    Object.assign(settings, fresh.settings);
+    renderPersonalities();
+  }
+
+  // ---- the editor ----
+  const $e = id => document.getElementById(id);
+  const editor = $e('editor');
+  let editing = null; // custom being edited (has id) or null for a new one
+  let confirmDelete = false;
+  const rawEmo = {};
+  const emoRows = $e('emoRows');
+  for (const e of emotions) {
+    const range = el('input', { type: 'range', min: 0, max: 100, id: `emo-${e.id}` });
+    const out = el('output', { htmlFor: `emo-${e.id}` });
+    range.addEventListener('input', () => { rawEmo[e.id] = +range.value; updateEditor(); });
+    emoRows.append(el('div', { className: `erow e-${e.id}` }, el('label', { className: 'el', htmlFor: `emo-${e.id}`, textContent: `${e.emoji} ${e.label}` }), range, out));
+  }
+  function updateEditor() {
+    const mix = percent(rawEmo);
+    for (const e of emotions) emoRows.querySelector(`#emo-${e.id}`).nextSibling.textContent = `${mix[e.id]}%`;
+    $e('editBar').replaceChildren(...mixBar(mix).children);
+    for (const [r, o] of [['pAct', 'pActV'], ['pSpeed', 'pSpeedV'], ['pClimb', 'pClimbV']]) $e(o).textContent = `${$e(r).value}%`;
+  }
+  for (const r of ['pAct', 'pSpeed', 'pClimb']) $e(r).addEventListener('input', updateEditor);
+
+  function openEditor(c) {
+    editing = c || null;
+    confirmDelete = false;
+    $e('pDelete').textContent = 'Delete';
+    $e('pName').value = c ? c.label : '';
+    const start = c ? c.emotions : { happy: 25, calm: 25, curious: 25, tired: 10, grumpy: 5, scared: 10 };
+    for (const e of emotions) { rawEmo[e.id] = start[e.id] ?? 0; $e(`emo-${e.id}`).value = rawEmo[e.id]; }
+    $e('pAct').value = c ? c.activity : 50;
+    $e('pSpeed').value = c ? c.speed : 50;
+    $e('pClimb').value = c ? c.climb : 50;
+    $e('pDelete').hidden = !c;
+    $e('pErr').textContent = '';
+    editor.hidden = false;
+    updateEditor();
+    $e('pName').focus();
+    editor.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  }
+  const closeEditor = () => { editor.hidden = true; editing = null; };
+  $e('addPersonality').addEventListener('click', () => openEditor(null));
+  $e('pCancel').addEventListener('click', closeEditor);
+
+  $e('pSave').addEventListener('click', async () => {
+    const def = {
+      label: $e('pName').value, emotions: { ...rawEmo },
+      activity: +$e('pAct').value, speed: +$e('pSpeed').value, climb: +$e('pClimb').value,
+    };
+    if (editing) def.id = editing.id;
+    const before = new Set(customs.map(c => c.id));
+    const next = editing ? customs.map(c => (c.id === editing.id ? def : c)) : [...customs, def];
+    try { await api.set('customPersonalities', next); }
+    catch { $e('pErr').textContent = 'Give it a name, keep every slider in 0–100 and at least one emotion above 0 (up to 12 personalities).'; return; }
+    await refreshPersonalities();
+    const made = customs.find(c => !before.has(c.id));
+    const pick = editing ? editing.id : (made && made.id);
+    if (pick) Object.assign(settings, await api.set('personality', pick));
+    renderPersonalities();
+    saved.textContent = `Saved. Tito is now ${def.label.trim().toLowerCase()}.`;
+    closeEditor();
+  });
+
+  $e('pDelete').addEventListener('click', async () => {
+    if (!editing) return;
+    if (!confirmDelete) { confirmDelete = true; $e('pDelete').textContent = 'Click again to delete'; return; }
+    await api.set('customPersonalities', customs.filter(c => c.id !== editing.id));
+    await refreshPersonalities();
+    saved.textContent = 'Deleted.';
+    closeEditor();
+  });
 
   // ---- stay still ----
   const stay = document.getElementById('stay');
