@@ -22,7 +22,7 @@ const GRAVITY = 2600;    // px/s²
 const MAX_FALL = 2200;
 const LEDGE_INSET = 28;  // keep Tito's feet this far inside a window's top edge
 const SNAP_UP = 40;      // dropped this close below a window top -> stand on it
-const HEADROOM = 135;    // px above a window top needed for Tito's body (sitting height at size 1)
+const HEADROOM = 118;    // px above a window top needed for Tito's body (walking height is ~116 at size 1)
 const EDGE_PAD = 12;     // keep this far from a window that covers part of an edge
 const MIN_SEGMENT = 40;  // a visible stretch of edge must be at least this wide (px at size 1)
 const CLIMB_AT_WALL = 0.5; // meeting a climbable window while on the move: climb it half the time
@@ -430,7 +430,10 @@ class Brain extends EventEmitter {
       for (const side of ['left', 'right']) {
         const sx = side === 'left' ? w.x : w.x + w.w;
         if (sx < a.x + 20 || sx > a.x + a.width - 20) continue; // edge off-screen
-        const crossed = right ? fx0 < sx && fx1 >= sx : fx0 > sx && fx1 <= sx;
+        // On a window top the visible stretch stops EDGE_PAD short of a window in front, so reaching that
+        // stop is reaching the wall.
+        const m = this.surface.kind === 'window' ? EDGE_PAD + 0.5 : 0;
+        const crossed = right ? fx0 < sx - m && fx1 >= sx - m : fx0 > sx + m && fx1 <= sx + m;
         if (!crossed) continue;
         const py = Math.min(w.y + w.h - 1, Math.max(w.y + 1, fy - 40 * this.size));
         if (this._occluded(i, side === 'left' ? sx + 1 : sx - 1, py)) continue; // that part of the side is hidden
@@ -448,9 +451,10 @@ class Brain extends EventEmitter {
     this.x = wall.sx - dir * 16 * this.size - this.W / 2; // just short of the edge, whichever side
     this.y = this.standY();
     this._commit();
-    const t = this._climbInfo(wall.w, wall.side);
-    this.emit('wall', { window: wall.w.id, climbable: !!t });
-    if (t && this.surface.kind === 'ground' && Math.random() < CLIMB_AT_WALL) { this._climbUp(t); return; }
+    // From the floor or from the top of another window: any visible side that rises above his feet.
+    const t = this._climbInfo(wall.w, wall.side, this.footY());
+    this.emit('wall', { window: wall.w.id, climbable: !!t, why: t ? '' : this.climbWhy });
+    if (t && Math.random() < CLIMB_AT_WALL) { this._climbUp(t); return; }
     const back = -dir;
     const [lo, hi] = this.xBounds();
     const room = back < 0 ? this.x - lo : hi - this.x;
@@ -463,18 +467,21 @@ class Brain extends EventEmitter {
   }
 
   // Can Tito climb this side of window w and stand on top? Returns a climb target or null.
-  _climbInfo(w, side) {
+  // `fromFoot` is the height he starts climbing from: the floor, or the top of the window he stands on.
+  _climbInfo(w, side, fromFoot = this.floorTop()) {
+    const no = why => { this.climbWhy = why; return null; }; // why the last refusal happened (debug)
     const a = this.area();
-    if (w.y < a.y + HEADROOM * this.size || w.y > this.floorTop() - 120) return null; // too high / too low
+    if (w.y < a.y + HEADROOM * this.size) return no(`top too close to the top of the screen (${Math.round(w.y - a.y)}px, needs ${Math.round(HEADROOM * this.size)})`);
+    if (w.y > fromFoot - 60 * this.size) return no('its top is not above his feet');
     const sx = side === 'left' ? w.x : w.x + w.w;
-    if (sx < a.x + 40 || sx > a.x + a.width - 40) return null;
+    if (sx < a.x + 40 || sx > a.x + a.width - 40) return no('side at the edge of the screen');
     const landX = side === 'left' ? w.x + LEDGE_INSET + 20 : w.x + w.w - LEDGE_INSET - 20;
-    if (!this._standable(w, landX)) return null;
+    if (!this._standable(w, landX)) return no('no visible spot to land on top');
     // The side he climbs must be visible all the way up: no climbing "inside" a window in front of it.
     const idx = this.windows.indexOf(w);
     const edgeX = side === 'left' ? sx + 1 : sx - 1;
-    const bottom = Math.min(w.y + w.h, this.floorTop()) - 4;
-    for (let y = w.y + 4; y <= bottom; y += 30) if (this._occluded(idx, edgeX, y)) return null;
+    const bottom = Math.min(w.y + w.h, fromFoot) - 4;
+    for (let y = w.y + 4; y <= bottom; y += 30) if (this._occluded(idx, edgeX, y)) return no('side hidden behind another window');
     return { w, side, sx, landX };
   }
 

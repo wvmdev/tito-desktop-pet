@@ -410,6 +410,32 @@ async function run({ app, petWin, brain, settings, openSettings, getPopup, getSe
         `mode=${brain.mode} facing=${brain.facing} foot=${Math.round(brain.footX())} wall=${wall.x} stopped=${stopped}`);
     }
   }
+  // Standing on top of one window and walking into the side of a taller one in front: climbs it
+  // (the case from the screenshot: Notes below, a window rising beside it), whatever the layers.
+  {
+    const low = { id: 21, pid: 91, x: wa.x + 100, y: floor - 260, w: 560, h: 260 };
+    const tall = { id: 22, pid: 92, x: low.x + low.w - 200, y: floor - 520, w: 400, h: 520 }; // overlaps the low one
+    for (const [label, wins] of [['taller window in front', [tall, low]], ['taller window behind', [low, tall]]]) {
+      brain.setWindows(wins);
+      await settle();
+      brain.surface = { kind: 'window', id: low.id };
+      brain.facing = 'right';
+      brain.x = low.x + 100 - brain.W / 2; brain.y = brain.standY(); brain._commit();
+      Math.random = () => 0;
+      brain._travelTo(tall.x + 150 - brain.W / 2, { mode: 'walk', anim: 'caminando', animSpeed: 2.2, speed: 300 });
+      await wait(1200);
+      Math.random = realRandom;
+      let sawClimb = brain.mode === 'climb';
+      for (let i = 0; i < 80 && !(brain.surface.kind === 'window' && brain.surface.id === tall.id); i++) { if (brain.mode === 'climb') sawClimb = true; await wait(100); }
+      check(`standing on a window, walking into a taller one (${label}): climbs onto it`, brain.surface.kind === 'window' && brain.surface.id === tall.id,
+        `surface=${brain.surface.kind}/${brain.surface.id} mode=${brain.mode}`);
+    }
+    // A window whose top is below his feet is not a wall to climb.
+    const stub = { id: 23, pid: 93, x: wa.x + 700, y: low.y + 30, w: 300, h: 230 };
+    brain.setWindows([stub, low]); await settle();
+    check('a window top lower than his feet is not climbable from above', !brain._climbInfo(stub, 'left', low.y));
+    brain.setWindows([wall]);
+  }
   // In front of a big window that reaches down behind the Dock (the usual real layout):
   // reaching its edge from inside also means climb or turn.
   const big = { id: 8, pid: 96, x: wa.x + 60, y: wa.y + 160, w: 900, h: wa.height + 100 };

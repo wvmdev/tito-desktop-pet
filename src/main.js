@@ -139,7 +139,8 @@ function createPetWindow() {
   brain.on('openMenu', () => openPopup('menu'));
   brain.on('openSize', () => openPopup('size'));
   brain.on('closeMenu', closePopup);
-  if (process.env.TITO_DEBUG) brain.on('mode', (m, info) => console.log('[brain]', m, JSON.stringify(info), 'at', Math.round(brain.x), Math.round(brain.y)));
+  if (process.env.TITO_DEBUG) brain.on('wall', w => console.log('[wall]', w.climbable ? 'climbable' : `NOT climbable: ${w.why}`));
+  if (process.env.TITO_DEBUG) brain.on('mode',(m, info) => console.log('[brain]', m, JSON.stringify(info), 'at', Math.round(brain.x), Math.round(brain.y)));
   if (settings.get('stayStill')) brain.setStay(settings.get('stayPose'));
   if (process.env.TITO_STAY) brain.setStay('sentado'); // dev: sit still for input testing
 }
@@ -264,6 +265,7 @@ function ensurePopup(kind) {
     webPreferences: secureWebPrefs(),
   });
   win.setAlwaysOnTop(true, 'screen-saver');
+  win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
   win.loadURL(pageURL(spec.page));
   win.on('blur', () => { if (popupWin === win) closePopup(); });
   win.on('closed', () => { if (popupWins[kind] === win) delete popupWins[kind]; });
@@ -291,15 +293,35 @@ function openPopup(kind) {
   const reveal = () => {
     if (popupWin !== win) return;
     win.webContents.send('popup:open');
-    // Dock icon is hidden, so explicitly take focus — blur is how "click elsewhere" dismisses it.
-    app.focus({ steal: true });
-    win.show();
-    win.focus();
+    // Show without activating the app: taking focus here is what made macOS jump to another window or
+    // desktop (Claude's) whenever Tito was clicked. With no focus there is no blur event, so a small
+    // watcher closes the popup once the mouse has left it (or it was never used).
+    win.showInactive();
+    watchPopup(win);
   };
   if (win.webContents.isLoading()) win.webContents.once('did-finish-load', reveal); else reveal();
 }
 
+let popupTimer = null;
+function watchPopup(win) {
+  clearInterval(popupTimer);
+  if (process.env.TITO_SMOKE) return; // tests drive the popups by hand
+  const t0 = Date.now();
+  let entered = false, leftAt = 0;
+  popupTimer = setInterval(() => {
+    if (popupWin !== win || win.isDestroyed()) { clearInterval(popupTimer); return; }
+    const c = screen.getCursorScreenPoint();
+    const b = win.getBounds();
+    const m = 14;
+    const inside = c.x >= b.x - m && c.x <= b.x + b.width + m && c.y >= b.y - m && c.y <= b.y + b.height + m;
+    if (inside) { entered = true; leftAt = 0; return; }
+    if (entered) { if (!leftAt) leftAt = Date.now(); if (Date.now() - leftAt > 700) closePopup(); }
+    else if (Date.now() - t0 > 4000) closePopup();
+  }, 120);
+}
+
 function closePopup() {
+  clearInterval(popupTimer);
   const win = popupWin;
   if (!win) return;
   popupWin = null;
@@ -712,6 +734,38 @@ app.whenReady().then(() => {
       out: process.env.TITO_TRIAL_OUT || path.join(require('os').tmpdir(), 'tito-trial.log'),
       gapMs: +process.env.TITO_TRIAL_GAP || 15000,
     }).catch(e => { console.log('TRIAL ERROR', e && e.stack); app.exit(3); });
+  }
+  // Dev: TITO_DEV_CLIMB=1 logs, every few seconds, why each real window side can or can't be climbed
+  // and then sends Tito to climb the nearest one (on the real screen, with the real window feed).
+  if (process.env.TITO_DEV_CLIMB) {
+    setInterval(() => {
+      const a = brain.area();
+      console.log('AREA', JSON.stringify(a), 'mode', brain.mode, 'surface', brain.surface.kind, 'windows', brain.windows.length);
+      for (const w of brain.windows) for (const side of ['left', 'right']) {
+        const t = brain._climbInfo(w, side);
+        console.log(' ', `win ${w.id} ${w.x},${w.y} ${w.w}x${w.h}`, side, t ? 'CLIMBABLE' : `no: ${brain.climbWhy}`);
+      }
+      if (brain.surface.kind === 'ground' && !['climb', 'held', 'fall'].includes(brain.mode)) { console.log('  -> climb()'); brain.climb(); }
+    }, 6000);
+    brain.on('mode', (m, info) => console.log('MODE', m, JSON.stringify(info)));
+  }
+  // Dev: TITO_DEV_ONLOW=1 puts Tito on the top of the lowest real test window and sends him walking
+  // into the side of the window overlapping it (the case of standing on one window, climbing another).
+  if (process.env.TITO_DEV_ONLOW) {
+    const iv = setInterval(() => {
+      const low = brain.windows.find(w => w.y === 420 && w.w === 560);
+      const tall = brain.windows.find(w => w.y === 200 && w.w === 450);
+      if (!low || !tall) return;
+      clearInterval(iv);
+      brain.surface = { kind: 'window', id: low.id, lastX: low.x };
+      brain.facing = 'right';
+      brain.x = low.x + 120 - brain.W / 2; brain.y = brain.standY(); brain._commit();
+      brain.sleep = () => {}; // the idle-sleep would interrupt the walk while nobody touches the Mac
+      brain.on('wall', w => console.log('WALL', JSON.stringify(w)));
+      brain.on('mode', (m, info) => console.log('MODE', m, JSON.stringify(info), 'surface', brain.surface.kind, brain.surface.id));
+      const go = () => { if (brain.surface.id === low.id) { Math.random = () => 0.1; brain._travelTo(tall.x + 200 - brain.W / 2, { mode: 'walk', anim: 'caminando', animSpeed: 2.2, speed: 160 }); } };
+      setInterval(() => { if (brain.mode === 'sleep') { brain.wake(); return; } if (brain.surface.id === low.id && !['walk', 'climb', 'land', 'fall', 'wake'].includes(brain.mode)) { brain.x = low.x + 120 - brain.W / 2; brain.y = brain.standY(); brain._commit(); go(); } }, 700);
+    }, 300);
   }
   // Dev: TITO_DEV_DROP=1 drops Tito onto the first real window the feed reports, so the result can be
   // checked on the real screen (screencapture).
