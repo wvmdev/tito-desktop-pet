@@ -164,12 +164,12 @@ async function run({ app, petWin, brain, settings, openSettings, getPopup, getSe
     const tClick = Date.now();
     click(button);
     let p = getPopup();
-    while (!(p.win && p.win.isVisible()) && Date.now() - tClick < 3000) { await wait(20); p = getPopup(); }
+    while (!(p.win && p.win.getOpacity() > 0.5) && Date.now() - tClick < 3000) { await wait(20); p = getPopup(); }
     const ms = Date.now() - tClick;
     check(`${button} click -> menu popup appears right away`, p.kind === 'menu' && ms < 1300, `${ms}ms`);
     check(`${button} click -> reaction plays alongside`, ['sorprendido', 'saludando', 'dando_amor'].includes(brain.anim), `anim=${brain.anim}`);
     if (button === 'left' && p.win) { await wait(300); await shot(p.win, 'popup-menu.png'); }
-    if (p.win) p.win.emit('blur');
+    if (p.win) brain.emit('closeMenu');
     await wait(600);
   }
 
@@ -194,7 +194,7 @@ async function run({ app, petWin, brain, settings, openSettings, getPopup, getSe
     await wait(300);
     const w10 = await js(scaleNow);
     check('sprite scales with size', Math.abs(w15 / w10 - 1.5) < 0.05, `${w15} vs ${w10}`);
-    p.win.hide(); p.win.emit('blur');
+    brain.emit('closeMenu');
     await wait(600);
   }
 
@@ -652,6 +652,153 @@ async function run({ app, petWin, brain, settings, openSettings, getPopup, getSe
     brain.setReactions(false);
   }
 
+  // ---- play mode: a ball that rests on visible layers, and Tito fetching it ----
+  {
+    const { Ball } = require('./ball');
+    const ball = new Ball(brain.ballWorld());
+    const floor = () => brain.floorTop();
+    const until = async (fn, ms = 6000) => { const t = Date.now(); while (Date.now() - t < ms) { if (fn()) return true; await wait(40); } return false; };
+    let catches = 0;
+    brain.on('catch', () => { catches++; ball.hide(); });
+    brain.on('release', ({ x, y }) => ball.show(x, y, 0, -100));
+    brain.getBall = () => ball.getState();
+    const tickLoop = setInterval(() => ball.tick(0.016), 16);
+    const putTito = async (x, surf = { kind: 'ground' }) => {
+      brain.stopPlay(); brain.fetching = false; await settle();
+      brain._setSurface(surf);
+      brain.x = x - brain.W / 2; brain.y = brain.standY(); brain._commit();
+      brain.mode = 'idle'; brain.idle({ forever: true });
+      modes.length = 0; catches = 0;
+      brain.startPlay();
+    };
+    const throwBall = (x, y, vx = 0, vy = 0) => { ball.show(x, y, vx, vy); brain.ballThrown(); };
+    const sawMode = m => modes.some(e => e.m === m);
+
+    // physics: lands on a window top (visible layer) instead of falling through it to the floor
+    const topWin = { id: 61, pid: 70, x: wa.x + 400, y: floor() - 330, w: 520, h: 330 };
+    brain.setWindows([topWin]);
+    ball.show(topWin.x + 260, topWin.y - 260);
+    check('the ball rests on a window top, it does not fall to the floor',
+      await until(() => ball.s.surface === 61 && ball.s.vx === 0 && ball.s.vy === 0, 3000) && Math.abs(ball.y + ball.r - topWin.y) < 1, `surface=${ball.s.surface} y=${Math.round(ball.y)}`);
+    brain.setWindows([{ ...topWin, x: topWin.x + 80, y: topWin.y + 40 }]);
+    await wait(120);
+    check('it rides along when its window is moved', Math.abs(ball.x - (topWin.x + 340)) < 3 && Math.abs(ball.y + ball.r - (topWin.y + 40)) < 1, `x=${Math.round(ball.x)} y=${Math.round(ball.y)}`);
+    brain.setWindows([]);
+    check('and drops to the floor when the window goes away', await until(() => ball.s.surface === 'ground', 3000) && Math.abs(ball.y + ball.r - floor()) < 1, `surface=${ball.s.surface}`);
+    // covered edge: a window in front hides this part of the top edge -> the ball lands on the floor behind it
+    const back = { id: 62, pid: 71, x: wa.x + 300, y: floor() - 300, w: 600, h: 300 };
+    const front = { id: 63, pid: 72, x: wa.x + 450, y: floor() - 360, w: 300, h: 360 };
+    brain.setWindows([front, back]);
+    ball.show(back.x + 300, back.y - 200);
+    check('it lands on the layer that is in front, not on the hidden edge behind it', await until(() => ball.s.surface === 63, 3000), `surface=${ball.s.surface}`);
+    ball.show(back.x + 40, back.y - 200);
+    check('while the visible part of the same edge is', await until(() => ball.s.surface === 62, 3000), `surface=${ball.s.surface}`);
+    ball.show(wa.x + 5, floor() - 400, -2500, 0);
+    await wait(900);
+    check('it stays on screen (bounces off the sides)', ball.x >= wa.x + ball.r - 1 && ball.x <= wa.x + wa.width - ball.r + 1);
+    // a throw keeps the hand's speed
+    ball.show(wa.x + 600, floor() - 300);
+    ball.grab(wa.x + 600, floor() - 300, 1000);
+    ball.dragTo(wa.x + 650, floor() - 330, 1040); ball.dragTo(wa.x + 700, floor() - 360, 1080);
+    let thrown = 0; ball.once('thrown', () => thrown++);
+    ball.release(1100);
+    check('letting go throws it with the speed of the hand', thrown === 1 && ball.s.vx > 800 && ball.s.vy < -400, `v=${Math.round(ball.s.vx)},${Math.round(ball.s.vy)}`);
+    ball.hide();
+    brain.setWindows([]);
+
+    // fetching on the same layer
+    brain.startPlay();
+    await putTito(wa.x + 200);
+    throwBall(wa.x + 200 + 600, floor() - 80, 0, 0);
+    check('he runs to a ball on the floor and catches it', await until(() => catches === 1, 7000), `modes=${modes.map(e => e.m).join(',')}`);
+    check('and plays with it, then drops it at his feet', await until(() => ball.visible && brain.mode !== 'run', 6000) && Math.abs(ball.x - brain.footX()) < 140, `ball=${Math.round(ball.x)} foot=${Math.round(brain.footX())}`);
+    check('cursor play can not cut the chase short', (() => { brain.fetching = true; const r = brain.react('asustado'); brain.fetching = false; return r === false; })());
+    await wait(500);
+
+    // up the side of a window to a ball on its top
+    const perch = { id: 64, pid: 73, x: wa.x + 700, y: floor() - 300, w: 560, h: 300 };
+    brain.setWindows([perch]);
+    await putTito(wa.x + 150);
+    throwBall(perch.x + 280, perch.y - 150, 0, 0);
+    check('a ball on a window top: he climbs up the side to get it', await until(() => catches === 1, 14000) && sawMode('climb'), `modes=${[...new Set(modes.map(e => e.m))].join(',')} catches=${catches}`);
+    check('and that happened on the window layer', brain.surface.kind === 'window' && brain.surface.id === 64, JSON.stringify(brain.surface));
+
+    // down from a ledge, and across a gap
+    await wait(300);
+    const ledge = { id: 65, pid: 74, x: wa.x + 300, y: floor() - 240, w: 420, h: 240 };
+    const higher = { id: 66, pid: 75, x: wa.x + 860, y: floor() - 340, w: 420, h: 340 };
+    brain.setWindows([higher, ledge]);
+    await putTito(ledge.x + 120, { kind: 'window', id: 65 });
+    throwBall(wa.x + 80, floor() - 150, 0, 0);
+    check('a ball on the floor while he is up on a ledge: he jumps down', await until(() => catches === 1, 12000) && sawMode('jump'), `modes=${[...new Set(modes.map(e => e.m))].join(',')}`);
+    await wait(300);
+    brain.setWindows([higher, ledge]);
+    await putTito(ledge.x + 300, { kind: 'window', id: 65 });
+    throwBall(higher.x + 210, higher.y - 150, 0, 0);
+    check('a ball on a higher window across a gap: he jumps over to it, no climbing', await until(() => catches === 1, 12000) && sawMode('jump') && !sawMode('climb'), `modes=${[...new Set(modes.map(e => e.m))].join(',')} catches=${catches}`);
+
+    // caught in the air with a leap
+    await wait(300);
+    brain.setWindows([]);
+    await putTito(wa.x + 500);
+    throwBall(wa.x + 500 + 40, floor() - 190, 0, -300);
+    check('a ball thrown over his head is caught in mid-air with a leap', await until(() => catches === 1, 4000) && sawMode('jump'), `modes=${[...new Set(modes.map(e => e.m))].join(',')} catches=${catches}`);
+
+    // a spot he cannot reach: he teleports there
+    await wait(300);
+    const hi = { id: 67, pid: 76, x: wa.x + 800, y: wa.y + 80, w: 500, h: 400 };
+    brain.setWindows([hi]);
+    await putTito(wa.x + 200);
+    throwBall(hi.x + 250, hi.y - 40, 0, 0);
+    check('a ball he can neither climb nor jump to: he teleports to it', await until(() => catches === 1, 14000) && sawMode('teleport'), `modes=${[...new Set(modes.map(e => e.m))].join(',')} catches=${catches}`);
+
+    // play mode off ends the chase
+    await wait(300);
+    brain.setWindows([]);
+    await putTito(wa.x + 200);
+    throwBall(wa.x + 1000, floor() - 80, 0, 0);
+    await wait(300);
+    brain.stopPlay();
+    check('switching play mode off ends the chase', brain.fetching === false);
+    clearInterval(tickLoop);
+    brain.getBall = null; brain.removeAllListeners('catch'); brain.removeAllListeners('release');
+    brain.setWindows([]); await settle();
+  }
+
+  // ---- chat slash commands ----
+  {
+    const C = require('./renderer/commands');
+    check('slash commands: /sleep is a command, a file path is not', C.parse('/sleep') === 'sleep' && C.parse('/Users/me/a.txt') === null && C.parse('hi /sleep') === null);
+    check('typing /sl lists sleep (prefix match)', C.match('sl').map(c => c.name).includes('sleep') && C.match('sl').every(c => c.name.startsWith('sl')));
+    check('every animation can be ordered from the chat', [...new Set(PERSONALITIES && MOVE_ANIMS)].length > 0 && ['durmiendo', 'escondido', 'enfadado', 'asustado', 'celebrando', 'triunfante'].every(a => C.COMMANDS.some(c => c.anim === a)));
+    brain.setWindows([]); await settle();
+    check('/sleep holds the sleeping pose', brain.command(C.find('sleep')) && brain.anim === 'durmiendo' && brain.cmdPose === 'durmiendo');
+    await wait(1500);
+    check('and he stays asleep (no wandering off)', brain.anim === 'durmiendo' && brain.mode === 'idle');
+    brain.click();
+    check('clicking him undoes it, and does not open the menu', brain.cmdPose === null && brain.mode !== 'menu', `mode=${brain.mode} pose=${brain.cmdPose}`);
+    await wait(2500);
+    check('then he carries on as usual', brain.mode !== 'menu' && brain.cmdPose === null);
+    brain.mode = 'idle'; brain.command(C.find('hide'));
+    check('/hide holds the hiding pose', brain.anim === 'escondido');
+    brain.undo(); await settle();
+    brain.command(C.find('run'));
+    check('/run makes him run', brain.mode === 'run', `mode=${brain.mode}`);
+    brain.command(C.find('angry'));
+    check('an emotion like /angry works too', brain.anim === 'enfadado'); 
+    brain.undo(); await settle();
+
+    // the ball: one click shoots it off, a second one makes it disappear
+    const { Ball } = require('./ball');
+    const b = new Ball(brain.ballWorld());
+    b.show(wa.x + 400, brain.floorTop() - 200);
+    b.grab(wa.x + 400, brain.floorTop() - 200, 1000);
+    check('a click on the ball does not throw it by itself', b.release(1100) === 'click' && b.held);
+    b.shoot();
+    check('and then it shoots off in a random direction', !b.held && Math.hypot(b.s.vx, b.s.vy) >= 1000);
+    b.hide();
+  }
+
   // ---- stay still ----
   settings.set('stayPose', 'durmiendo');
   settings.set('stayStill', true);
@@ -824,17 +971,20 @@ async function run({ app, petWin, brain, settings, openSettings, getPopup, getSe
   const typeAndSend = t => cjs(`(() => { const i = document.getElementById('input'); i.value = ${JSON.stringify(t)}; i.dispatchEvent(new Event('input')); i.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })); })()`);
   check('chat window opens with the provider in the header', /Custom .*local-llm/.test(await cjs('document.getElementById("sub").textContent')));
   // Compact first; the button expands it and the choice is remembered.
-  const b0 = cw.getBounds();
+  // Content size, so a native title bar (Windows) doesn't change what the chat's page gets.
+  const content = () => { const c = cw.getContentBounds(), o = cw.getBounds(); return { ...o, width: c.width, height: c.height }; };
+  const b0 = content();
+  const bottom0 = cw.getBounds().y + cw.getBounds().height; // outer bottom edge: must not move when the chat grows
   check('chat opens as a small compact window', b0.width === 340 && b0.height === 190 && (await cjs('document.body.classList.contains("compact")')), JSON.stringify(b0));
   check('chat floats on top, on every desktop', cw.isAlwaysOnTop() && cw.isVisibleOnAllWorkspaces());
   await cjs('document.getElementById("toggleSize").click()');
   await wait(600);
-  const b1 = cw.getBounds();
+  const b1 = content();
   check('expand button grows it to the full chat (bottom edge stays put)', b1.width === 400 && b1.height === 560 && !(await cjs('document.body.classList.contains("compact")'))
-    && Math.abs((b1.y + b1.height) - (b0.y + b0.height)) <= 1 && settings.get('chatExpanded') === true, JSON.stringify(b1));
+    && Math.abs((cw.getBounds().y + cw.getBounds().height) - bottom0) <= 1 && settings.get('chatExpanded') === true, JSON.stringify(b1));
   await cjs('document.getElementById("toggleSize").click()');
   await wait(600);
-  check('and shrinks back to compact', cw.getBounds().height === 190 && settings.get('chatExpanded') === false);
+  check('and shrinks back to compact', content().height === 190 && settings.get('chatExpanded') === false);
   await typeAndSend('Hi Tito');
   await wait(800);
   const bubbles = await cjs('[...document.querySelectorAll(".msg")].map(m => m.className.split(" ")[1] + ":" + m.firstChild.textContent)');
@@ -891,7 +1041,7 @@ async function run({ app, petWin, brain, settings, openSettings, getPopup, getSe
   ex.openSettleMs = 0;
   ex.roots = [sandbox];
   const waitFor = async (fn, ms = 5000) => { const t = Date.now(); while (Date.now() - t < ms) { const v = await fn(); if (v) return v; await wait(40); } return null; };
-  const confirmShown = () => waitFor(() => { const w = getConfirmWin(); return w && !w.isDestroyed() && w.isVisible() ? w : null; });
+  const confirmShown = () => waitFor(() => { const w = getConfirmWin(); return w && !w.isDestroyed() && w.getOpacity() > 0.5 ? w : null; });
   const answer = async allow => { const w = await confirmShown(); if (!w) return false; await wait(750); await w.webContents.executeJavaScript(`document.getElementById('${allow ? 'allow' : 'deny'}').click()`); return true; };
   const turnDone = () => waitFor(() => !getChat().busy, 8000);
   const rows = () => cjs('[...document.querySelectorAll(".act")].map(r => r.className.replace("act ", "") + ":" + r.children[1].textContent)');
@@ -937,7 +1087,7 @@ async function run({ app, petWin, brain, settings, openSettings, getPopup, getSe
   await confirmShown();
   stopTask();
   await turnDone();
-  check('Stop while asking: popup closes, nothing runs', fake.calls.length === 0 && !getConfirmWin().isVisible() && !getChat().busy);
+  check('Stop while asking: popup closes, nothing runs', fake.calls.length === 0 && !(getConfirmWin().getOpacity() > 0.5) && !getChat().busy);
 
   // Trusted: routine runs, destructive (declared or detected) still asks.
   settings.set('securityLevel', 'trusted');

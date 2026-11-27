@@ -15,6 +15,7 @@
     body.no-vibrancy { background: linear-gradient(180deg, #eef2f6, #e3e8ee); }
     @media (prefers-color-scheme: dark) { body.no-vibrancy { background: linear-gradient(180deg, #23262d, #1b1d22); } }
     .drag { -webkit-app-region: drag; height: 38px; }
+    body.win .drag { height: 10px; } /* native title bar on Windows */
     main { padding: 0 22px 26px; }
     h1 { font-size: 20px; margin: 0 0 2px; letter-spacing: -0.01em; }
     p.lead { color: var(--ink-muted); margin: 0 0 4px; }
@@ -329,7 +330,7 @@
         <button class="btn" id="testBtn">Test connection</button>
         <span class="result" id="testResult" aria-live="polite"></span>
       </div>
-      <div class="note">Keys are encrypted with your Mac's Keychain and are only ever sent to the provider you pick. Tito never shows them again or writes them to logs.</div>
+      <div class="note"><span id="keystoreNote">Keys are encrypted with your Mac's Keychain</span> and are only ever sent to the provider you pick. Tito never shows them again or writes them to logs.</div>
     </div>
 
     <h2>Scheduled tasks</h2>

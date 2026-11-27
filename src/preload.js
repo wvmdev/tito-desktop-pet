@@ -24,11 +24,13 @@ contextBridge.exposeInMainWorld('tito', {
     openSettings: () => ipcRenderer.send('menu:settings'),
     openChat: () => ipcRenderer.send('menu:chat'),
     feed: () => ipcRenderer.send('menu:feed'),
+    play: () => ipcRenderer.send('menu:play'),
     onNote: cb => ipcRenderer.on('popup:note', (_e, t) => cb(t)),
   },
   chat: {
     get: () => ipcRenderer.invoke('chat:get'),
     send: text => ipcRenderer.send('chat:send', text),
+    command: name => ipcRenderer.invoke('chat:command', name),
     stop: () => ipcRenderer.send('chat:stop'),
     clear: () => ipcRenderer.invoke('chat:clear'),
     openSettings: () => ipcRenderer.send('chat:open-settings'),
@@ -45,6 +47,12 @@ contextBridge.exposeInMainWorld('tito', {
     get: () => ipcRenderer.invoke('size:get'),
     set: value => ipcRenderer.send('size:set', value),
     close: () => ipcRenderer.send('size:close'),
+  },
+  ball: {
+    grab: (sx, sy) => ipcRenderer.send('ball:grab', { sx, sy }),
+    move: (sx, sy) => ipcRenderer.send('ball:move', { sx, sy }),
+    release: () => ipcRenderer.send('ball:release'),
+    hide: () => ipcRenderer.send('ball:hide'),
   },
   companion: {
     get: () => ipcRenderer.invoke('companion:get'),

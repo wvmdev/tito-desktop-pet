@@ -1,17 +1,116 @@
 {
   "name": "tito-desktop-pet",
   "version": "0.1.0",
-  "description": "Tito — an animated desktop cat with an embedded AI assistant",
+  "description": "Tito \u2014 an animated desktop cat with an embedded AI assistant",
   "main": "src/main.js",
   "private": true,
   "scripts": {
-    "start": "electron ."
+    "start": "electron .",
+    "dist": "electron-builder --mac --universal",
+    "dist:win": "electron-builder --win --x64 --arm64",
+    "build:helpers:win": "mcs -target:exe -out:bin-win/tito-windows.exe native/windows/TitoWindows.cs && mcs -target:exe -out:bin-win/tito-input.exe native/windows/TitoInput.cs"
   },
   "devDependencies": {
-    "electron": "45.3.3"
+    "electron": "45.3.3",
+    "electron-builder": "^26.18.0",
+    "resedit": "^3.1.1"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^1.9.0",
-    "openai": "^7.57.0"
+    "@tesseract.js-data/eng": "^1.0.0",
+    "jpeg-js": "^0.4.4",
+    "openai": "^7.57.0",
+    "pngjs": "^7.0.0",
+    "tesseract.js": "^7.0.0"
+  },
+  "author": "Tito",
+  "build": {
+    "appId": "com.tito.desktoppet",
+    "productName": "Tito",
+    "asar": false,
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "src/**/*",
+      "assets/sprites/**/*",
+      "assets/tray-win*.png",
+      "native/**/*",
+      "build/icon.png",
+      "package.json",
+      "!**/*.map",
+      "!native/**/*.cs.orig",
+      "!node_modules/tesseract.js-core/tesseract-core.*",
+      "!node_modules/tesseract.js-core/tesseract-core-simd.*",
+      "!node_modules/tesseract.js-core/tesseract-core-relaxedsimd.*",
+      "!node_modules/@tesseract.js-data/eng/4.0.0_best_int/**",
+      "!node_modules/tesseract.js/dist/**",
+      "!node_modules/tesseract.js/docs/**"
+    ],
+    "mac": {
+      "category": "public.app-category.entertainment",
+      "icon": "build/icon.icns",
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "universal"
+          ]
+        }
+      ],
+      "identity": "-",
+      "hardenedRuntime": false,
+      "gatekeeperAssess": false,
+      "extendInfo": {
+        "NSScreenCaptureUsageDescription": "Tito only looks at your screen when you ask him to do something for you.",
+        "NSAppleEventsUsageDescription": "Tito can open apps when you ask him to."
+      },
+      "files": [
+        "bin/**/*"
+      ]
+    },
+    "dmg": {
+      "title": "Install Tito",
+      "artifactName": "Tito-${version}-mac.${ext}",
+      "window": {
+        "width": 540,
+        "height": 380
+      }
+    },
+    "afterPack": "build/afterPack.js",
+    "electronLanguages": [
+      "en-US"
+    ],
+    "win": {
+      "icon": "build/icon.ico",
+      "files": [
+        "bin-win/**/*"
+      ],
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        }
+      ],
+      "signAndEditExecutable": false,
+      "artifactName": "Tito-Setup-${version}-${arch}.exe"
+    },
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": false,
+      "runAfterFinish": true,
+      "createDesktopShortcut": "always",
+      "createStartMenuShortcut": true,
+      "shortcutName": "Tito",
+      "uninstallDisplayName": "Tito",
+      "deleteAppDataOnUninstall": false,
+      "installerIcon": "build/icon.ico",
+      "uninstallerIcon": "build/icon.ico",
+      "buildUniversalInstaller": false
+    }
   }
 }

@@ -7,6 +7,8 @@ const sendBtn = document.getElementById('send');
 const SEND_ICON = sendBtn.innerHTML;
 const STOP_ICON = '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>';
 if (window.tito.platform !== 'darwin') document.body.classList.add('no-vibrancy');
+if (window.tito.platform === 'win32') document.body.classList.add('win'); // native title bar: no room needed for traffic lights
+const COMPUTER = window.tito.platform === 'win32' ? 'PC' : 'Mac';
 
 let busy = false;
 let live = null; // the assistant bubble being streamed into
@@ -104,7 +106,7 @@ function emptyState() {
   const d = document.createElement('div');
   d.className = 'empty';
   const img = Object.assign(document.createElement('img'), { src: '../../assets/sprites/saludando/saludando_0.png', alt: '' });
-  d.append(img, document.createTextNode('Hi! Ask me anything, or ask me to do something on your Mac. I will ask before I change anything.'));
+  d.append(img, document.createTextNode('Hi! Ask me anything, or ask me to do something on your ' + COMPUTER + '. I will ask before I change anything.'));
   log.append(d);
 }
 
@@ -132,10 +134,50 @@ function setExpanded(on) {
 toggleBtn.addEventListener('click', () => api.setExpanded(!expanded));
 api.onExpanded(setExpanded);
 
+// ---------- slash commands: /sleep, /run, /happy ... (never sent to the AI) ----------
+const slash = document.getElementById('slash');
+let slashItems = [];
+let slashSel = 0;
+function hideSlash() { slash.hidden = true; slashItems = []; }
+function fillSlash(c) { input.value = `/${c.name}`; hideSlash(); input.focus(); autosize(); }
+function updateSlash() {
+  const m = /^\/([a-z]*)$/i.exec(input.value);
+  if (!m) return hideSlash();
+  slashItems = TitoCommands.match(m[1]);
+  if (!slashItems.length) return hideSlash();
+  slashSel = Math.min(slashSel, slashItems.length - 1);
+  slash.replaceChildren();
+  slashItems.forEach((c, i) => {
+    const row = document.createElement('div');
+    row.className = `opt${i === slashSel ? ' sel' : ''}`;
+    row.setAttribute('role', 'option');
+    const cmd = document.createElement('span');
+    cmd.className = 'cmd';
+    cmd.append(document.createTextNode('/'), Object.assign(document.createElement('b'), { textContent: c.name.slice(0, m[1].length) }), document.createTextNode(c.name.slice(m[1].length)));
+    row.append(cmd, Object.assign(document.createElement('span'), { className: 'desc', textContent: c.desc }));
+    row.addEventListener('mousedown', e => { e.preventDefault(); fillSlash(c); });
+    slash.append(row);
+  });
+  slash.hidden = false;
+  slash.children[slashSel]?.scrollIntoView({ block: 'nearest' });
+}
+function note(text) {
+  log.querySelector('.empty')?.remove();
+  log.append(Object.assign(document.createElement('div'), { className: 'note', textContent: text }));
+  log.scrollTop = log.scrollHeight;
+}
+async function runCommand(name) {
+  input.value = ''; hideSlash(); autosize();
+  const r = await api.command(name);
+  note(`/${name} · ${r.message}`);
+}
+
 let lastSent = '';
 function send(text) {
   const t = (text ?? input.value).trim();
-  if (!t || busy) return;
+  if (!t || busy && !TitoCommands.parse(t)) return;
+  const cmd = TitoCommands.parse(t);
+  if (cmd) { runCommand(cmd); return; }
   lastSent = t;
   bubble('user', t);
   input.value = '';
@@ -174,8 +216,21 @@ api.onStatus(s => { document.getElementById('sub').textContent = s; });
 
 // ---------- input ----------
 function autosize() { input.style.height = 'auto'; input.style.height = `${Math.min(140, input.scrollHeight)}px`; sendBtn.disabled = !busy && !input.value.trim(); }
-input.addEventListener('input', autosize);
+input.addEventListener('input', () => { slashSel = 0; autosize(); updateSlash(); });
+input.addEventListener('blur', hideSlash);
 input.addEventListener('keydown', e => {
+  if (!slash.hidden && slashItems.length) {
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      slashSel = (slashSel + (e.key === 'ArrowDown' ? 1 : -1) + slashItems.length) % slashItems.length;
+      updateSlash();
+      return;
+    }
+    if (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey && input.value.slice(1) !== slashItems[slashSel].name)) {
+      e.preventDefault(); fillSlash(slashItems[slashSel]); return;
+    }
+    if (e.key === 'Escape') { e.preventDefault(); hideSlash(); return; }
+  }
   if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); send(); }
 });
 sendBtn.addEventListener('click', () => (busy ? api.stop() : send()));

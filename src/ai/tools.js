@@ -4,6 +4,8 @@
 // validate(name, input) -> error string or null (models can send malformed input).
 const { ACTIONS } = require('./permissions');
 
+const WIN = process.platform === 'win32';
+
 const reason = { type: 'string', description: 'One short sentence telling the user why you are doing this.' };
 const effect = {
   type: 'string',
@@ -30,7 +32,9 @@ const TOOLS = [
     schema: { type: 'object', properties: { text: { type: 'string' }, effect, reason },
       required: ['text', 'effect', 'reason'], additionalProperties: false } },
   { name: 'press_key', toggle: 'mouseKeyboard',
-    description: 'Press a key or shortcut, e.g. "return", "tab", "escape", "cmd+c", "cmd+shift+s", "down".',
+    description: WIN
+      ? 'Press a key or shortcut, e.g. "return", "tab", "escape", "ctrl+c", "ctrl+shift+s", "alt+tab", "win+d", "backspace", "delete", "down".'
+      : 'Press a key or shortcut, e.g. "return", "tab", "escape", "cmd+c", "cmd+shift+s", "down".',
     schema: { type: 'object', properties: { keys: { type: 'string' }, effect, reason },
       required: ['keys', 'effect', 'reason'], additionalProperties: false } },
   { name: 'scroll', toggle: 'mouseKeyboard',
@@ -38,7 +42,9 @@ const TOOLS = [
     schema: { type: 'object', properties: { x: { type: 'number' }, y: { type: 'number' }, dy: { type: 'number' }, reason },
       required: ['x', 'y', 'dy', 'reason'], additionalProperties: false } },
   { name: 'open_app', toggle: 'openApps',
-    description: 'Open (or bring forward) an application by name, e.g. "Safari", "Notes".',
+    description: WIN
+      ? 'Open (or bring forward) an application by name, e.g. "Edge", "Notepad", "Calculator", "File Explorer".'
+      : 'Open (or bring forward) an application by name, e.g. "Safari", "Notes".',
     schema: { type: 'object', properties: { name: { type: 'string' }, reason },
       required: ['name', 'reason'], additionalProperties: false } },
   { name: 'read_file', toggle: 'fileRead',
@@ -54,7 +60,9 @@ const TOOLS = [
     schema: { type: 'object', properties: { path: { type: 'string' }, content: { type: 'string' }, reason },
       required: ['path', 'content', 'reason'], additionalProperties: false } },
   { name: 'delete_file', toggle: 'fileWrite',
-    description: 'Move a file or folder inside the user\'s home folder to the Trash.',
+    description: WIN
+      ? 'Move a file or folder inside the user\'s home folder to the Recycle Bin.'
+      : 'Move a file or folder inside the user\'s home folder to the Trash.',
     schema: { type: 'object', properties: { path: { type: 'string' }, reason },
       required: ['path', 'reason'], additionalProperties: false } },
   { name: 'schedule_task', toggle: null,
@@ -75,7 +83,11 @@ const TOOLS = [
 const BY_NAME = Object.fromEntries(TOOLS.map(t => [t.name, t]));
 
 // Shortcuts that can lose work even if the model called them routine.
-const RISKY_KEYS = /^(cmd\+q|cmd\+w|cmd\+shift\+w|cmd\+option\+w|cmd\+alt\+w|cmd\+delete|cmd\+backspace|cmd\+shift\+delete|cmd\+shift\+backspace|cmd\+option\+escape|cmd\+alt\+escape)$/;
+const RISKY_KEYS_WIN = /^(alt\+f4|ctrl\+w|ctrl\+shift\+w|ctrl\+q|ctrl\+shift\+q|shift\+delete|ctrl\+shift\+delete|ctrl\+shift\+backspace|ctrl\+alt\+delete|ctrl\+shift\+escape|ctrl\+shift\+esc|win\+l|win\+shift\+s)$/;
+const RISKY_KEYS_MAC = /^(cmd\+q|cmd\+w|cmd\+shift\+w|cmd\+option\+w|cmd\+alt\+w|cmd\+delete|cmd\+backspace|cmd\+shift\+delete|cmd\+shift\+backspace|cmd\+option\+escape|cmd\+alt\+escape)$/;
+// Mac-style names mean Ctrl on Windows (the input helper does the same), so check them as Ctrl there.
+const isRiskyKey = (keys, win = WIN) => (win ? RISKY_KEYS_WIN.test(keys.replace(/\b(cmd|command)\b/g, 'ctrl').replace(/\b(option)\b/g, 'alt')) : RISKY_KEYS_MAC.test(keys));
+const RISKY_KEYS = { test: keys => isRiskyKey(keys) };
 
 // -> [{ action, destructive }] : every entry must be permitted; the strictest answer wins.
 function classify(name, input = {}) {
@@ -135,4 +147,4 @@ for (const t of TOOLS) for (const c of classify(t.name, { effect: 'purchase', ki
   if (!ACTIONS[c.action]) throw new Error(`tools.js: unknown policy action ${c.action}`);
 }
 
-module.exports = { TOOLS, classify, validate, availableTools };
+module.exports = { TOOLS, classify, validate, availableTools, isRiskyKey };

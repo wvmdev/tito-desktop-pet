@@ -1,5 +1,6 @@
 // What is going on around Tito, without any screen access: is audio playing? (macOS keeps a
-// "prevent idle sleep" assertion for playing audio, which `pmset -g assertions` lists.)
+// "prevent idle sleep" assertion for playing audio, which `pmset -g assertions` lists. On Windows the
+// window helper reports the output's peak meter, see winfeed.js, and calls push().)
 const { execFile } = require('child_process');
 const EventEmitter = require('events');
 
@@ -16,8 +17,13 @@ function audioPlaying() {
 class Awareness extends EventEmitter {
   constructor() { super(); this.music = false; this._timer = null; }
   start() {
+    if (process.platform === 'win32') return; // Windows pushes updates instead, see push()
     this._timer = setInterval(() => this.poll(), POLL_MS);
     this.poll();
+  }
+  push(now) { // an update from outside (the Windows helper)
+    now = !!now;
+    if (now !== this.music) { this.music = now; this.emit('music', now); }
   }
   stop() { clearInterval(this._timer); }
   async poll() {

@@ -48,8 +48,13 @@ async function getJSON(url) {
   return res.json();
 }
 
+// Windows reports its battery through the window helper (winfeed.js); main calls this when it changes.
+let windowsBattery = null;
+function setWindowsBattery(b) { windowsBattery = b && Number.isFinite(b.percent) ? { percent: b.percent, charging: !!b.charging } : null; }
+
 function readBattery() {
   return new Promise(resolve => {
+    if (process.platform === 'win32') return resolve(windowsBattery);
     if (process.platform !== 'darwin') return resolve(null);
     execFile('pmset', ['-g', 'batt'], { timeout: 4000 }, (err, out) => {
       if (err) return resolve(null);
@@ -156,4 +161,4 @@ class Mood extends EventEmitter {
   }
 }
 
-module.exports = { Mood };
+module.exports = { Mood, setWindowsBattery };

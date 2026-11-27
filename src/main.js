@@ -6,10 +6,13 @@ const path = require('path');
 const fs = require('fs');
 const { spawn, execFile } = require('child_process');
 const { pathToFileURL } = require('url');
+const { Ball } = require('./ball');
+const Commands = require('./renderer/commands');
 const { Brain } = require('./brain');
 const { Settings, SIZE_MIN, SIZE_MAX } = require('./settings');
 const { personalityList, STAY_POSES, EMOTIONS, EMOTION_INFO } = require('./personalities');
-const { Mood } = require('./mood');
+const { Mood, setWindowsBattery } = require('./mood');
+const { WinFeed } = require('./winfeed');
 const CR = require('./companion-rules');
 const { Awareness } = require('./awareness');
 const { SecretStore } = require('./ai/secrets');
@@ -18,7 +21,7 @@ const { LEVELS, PERM_TOGGLES } = require('./ai/permissions');
 const { ChatSession } = require('./chat');
 const { availableTools } = require('./ai/tools');
 const { Executor } = require('./ai/executor');
-const { createMacBackend } = require('./ai/mac-backend');
+const { createBackend } = require('./ai/backend');
 const { TaskScheduler } = require('./tasks');
 
 const ROOT = path.join(__dirname, '..');
@@ -27,6 +30,14 @@ const ROOT = path.join(__dirname, '..');
 const BASE_W = 280;
 const BASE_H = 270; // tallest pose (panza_arriba while held) is ~251px
 const isMac = process.platform === 'darwin';
+const isWin = process.platform === 'win32';
+// Windows: Tito's own small windows must never take keyboard focus from the app you are typing in (the
+// counterpart of the non-activating panel on the Mac), and need no resize frame around a transparent window.
+// Chat and Settings are ordinary windows on Windows: native frame (so they can be moved, minimised and
+// closed in the usual way), sized by their content, with a background that matches the system theme.
+const windowedOpts = () => ({ useContentSize: true, autoHideMenuBar: true, backgroundColor: require('electron').nativeTheme.shouldUseDarkColors ? '#1b1d22' : '#eef2f6' });
+const WIN_OVERLAY = isWin ? { focusable: false, thickFrame: false } : {};
+if (isWin) app.setAppUserModelId('com.tito.desktoppet'); // taskbar grouping, tray, notifications
 
 // Serve the app from tito://app/... so renderer pages and sprites are same-origin
 // (needed for canvas alpha hit-testing; file:// images taint canvases).
@@ -115,6 +126,8 @@ function createPetWindow() {
     alwaysOnTop: true,
     acceptFirstMouse: true,
     backgroundColor: '#00000000',
+    ...WIN_OVERLAY,
+    ...(isWin ? { icon: path.join(ROOT, 'build', 'icon.png') } : {}),
     webPreferences: secureWebPrefs(),
   });
   // 'screen-saver' level keeps Tito above normal and floating windows (incl. full-screen apps).
@@ -191,6 +204,90 @@ function startCursorWatch() {
     else setIgnore(true);
   }, 25);
 }
+
+
+// ---------- play mode: a ball you can throw, and Tito fetches it ----------
+// The ball is its own small transparent window; src/ball.js holds the physics and rests it on the same
+// visible surfaces Tito stands on (src/brain.js ballSurface), and the brain does the chasing.
+const BALL_WIN = 40;
+let ballClickTimer = null;
+let ball = null, ballWin = null, ballLoop = null, ballLast = 0, ballIgnoring = null, playOn = false;
+
+function createBallWindow() {
+  ballWin = new BrowserWindow({
+    width: BALL_WIN, height: BALL_WIN, show: false,
+    ...(isMac ? { type: 'panel' } : {}),
+    transparent: true, frame: false, hasShadow: false, resizable: false, movable: false,
+    minimizable: false, maximizable: false, fullscreenable: false, skipTaskbar: true,
+    alwaysOnTop: true, focusable: false, acceptFirstMouse: true, backgroundColor: '#00000000',
+    ...(isWin ? { thickFrame: false } : {}),
+    webPreferences: secureWebPrefs(),
+  });
+  ballWin.setAlwaysOnTop(true, 'screen-saver');
+  ballWin.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+  ballWin.loadURL(pageURL('ball.html'));
+  makeGhost(ballWin); ballIgnoring = true;
+  ballWin.on('closed', () => { ballWin = null; });
+}
+
+function setBallIgnore(v) {
+  if (!ballWin || ballWin.isDestroyed() || v === ballIgnoring) return;
+  ballIgnoring = v;
+  ballWin.setIgnoreMouseEvents(v);
+}
+
+function ballFrame() {
+  const now = performance.now();
+  const dt = (now - (ballLast || now)) / 1000;
+  ballLast = now;
+  if (!ball || !ballWin || ballWin.isDestroyed()) return;
+  ball.tick(dt);
+  if (!ball.visible) { if (ballWin.getOpacity() > 0) { ghost(ballWin); ballIgnoring = true; } return; }
+  if (ballWin.getOpacity() < 1) { ballWin.setOpacity(1); ballIgnoring = null; }
+  const x = Math.round(ball.x - BALL_WIN / 2) || 0, y = Math.round(ball.y - BALL_WIN / 2) || 0;
+  const b = ballWin.getBounds();
+  if (b.x !== x || b.y !== y) ballWin.setPosition(x, y);
+  if (!process.env.TITO_SMOKE) { // click-through everywhere except right on the ball
+    const c = screen.getCursorScreenPoint();
+    const over = Math.hypot(c.x - ball.x, c.y - ball.y) <= ball.r + 4;
+    setBallIgnore(!(over || ball.held));
+  }
+}
+
+function startPlay() {
+  if (playOn || !brain) return;
+  playOn = true;
+  if (!ball) {
+    ball = new Ball(brain.ballWorld());
+    ball.on('thrown', () => brain && brain.ballThrown());
+  }
+  if (!ballWin || ballWin.isDestroyed()) createBallWindow();
+  brain.getBall = () => ball && ball.getState();
+  brain.startPlay();
+  // Tito catches it: it disappears into his paws, and comes back dropped at his feet.
+  brain.removeAllListeners('catch');
+  brain.removeAllListeners('release');
+  brain.on('catch', () => ball && ball.hide());
+  brain.on('release', ({ x, y }) => { if (ball) ball.show(x, y, (brain.facing === 'left' ? -1 : 1) * 70, -260); });
+  // A first toss from beside him so the game starts by itself.
+  const dir = brain.footX() > brain.area().x + brain.area().width / 2 ? -1 : 1;
+  ball.show(brain.footX() + dir * 180 * brain.size, brain.footY() - 220 * brain.size, dir * 160, -120);
+  brain.ballThrown();
+  ballLast = 0;
+  if (!ballLoop) ballLoop = setInterval(ballFrame, 16);
+  refreshTrayMenu();
+}
+
+function stopPlay() {
+  if (!playOn) return;
+  playOn = false;
+  if (ball) ball.hide();
+  if (brain) { brain.stopPlay(); brain.getBall = null; }
+  if (ballWin && !ballWin.isDestroyed()) { ghost(ballWin); ballIgnoring = true; }
+  clearInterval(ballLoop); ballLoop = null;
+  refreshTrayMenu();
+}
+function togglePlay() { if (playOn) stopPlay(); else startPlay(); }
 
 // ---------- sleep when the user is away ----------
 // Electron reports how long since the last mouse/keyboard input (no permissions needed).
@@ -279,7 +376,8 @@ function startMood() {
 
 // ---------- other apps' windows (so Tito can stand on / climb them) ----------
 function startWindowFeed() {
-  if (!isMac || process.env.TITO_SMOKE || process.env.TITO_NO_WINDOWS || process.env.TITO_FAKE_WINDOWS) return;
+  if (!(isMac || isWin) || process.env.TITO_SMOKE || process.env.TITO_NO_WINDOWS || process.env.TITO_FAKE_WINDOWS) return;
+  if (isWin) return startWinFeed();
   const bin = path.join(ROOT, 'bin', 'tito-windows');
   const src = path.join(ROOT, 'native', 'windows.swift');
   const run = () => {
@@ -304,14 +402,36 @@ function startWindowFeed() {
   });
 }
 
+// Windows: one small helper reports the windows, whether sound is playing, and the battery (see winfeed.js).
+let winFeed = null;
+function startWinFeed() {
+  winFeed = new WinFeed({
+    spawn, bin: path.join(ROOT, 'bin-win', 'tito-windows.exe'), exists: fs.existsSync,
+    toDip: r => { try { return screen.screenToDipRect(null, r); } catch { return r; } }, // physical pixels -> Electron's units
+  });
+  winFeed.on('windows', list => { if (brain) brain.setWindows(list); });
+  winFeed.on('audio', on => { if (awareness && settings.get('reactions')) awareness.push(on); });
+  winFeed.on('battery', b => { setWindowsBattery(b); if (mood) mood.refreshBattery(); });
+  winFeed.on('unavailable', why => console.warn(`Window detection is off: ${why}. Tito will stay on the taskbar.`));
+  winFeed.start();
+  app.on('will-quit', () => winFeed && winFeed.stop());
+}
+
 // ---------- glass popups: 'menu' (Settings / Chat) and 'size' (slider) ----------
 const POPUPS = {
   // Compact pills (window includes ~7px around the pill for its shadow).
-  menu: { page: 'popup.html', w: 146, h: 50 },
+  menu: { page: 'popup.html', w: 184, h: 50 },
   size: { page: 'size.html', w: 196, h: 50 },
 };
 
-// Popups are created once, hidden, and reused: showing an existing window is near-instant,
+// macOS only lets a window appear over a full-screen app if it was already on screen on that Space. A window
+// that starts hidden and is shown later stays hidden there, so the popups, the confirm dialog and the ball are
+// always "shown" and are made invisible and click-through ("ghost") when not in use.
+function ghost(win) { if (win && !win.isDestroyed()) { win.setIgnoreMouseEvents(true); win.setOpacity(0); } }
+function unghost(win) { if (win && !win.isDestroyed()) { win.setOpacity(1); win.setIgnoreMouseEvents(false); win.showInactive(); } }
+function makeGhost(win) { ghost(win); win.showInactive(); }
+
+// Popups are created once, kept invisible, and reused: showing an existing window is near-instant,
 // building a new one each click took ~0.5s.
 const popupWins = {};
 
@@ -321,16 +441,22 @@ function ensurePopup(kind) {
   const spec = POPUPS[kind];
   const win = new BrowserWindow({
     width: spec.w, height: spec.h,
+    // A non-activating panel (like Tito himself and the ball) is the only kind of window macOS lets appear
+    // over a full-screen app. Normal windows stay hidden behind it, which is why the menu never showed there.
+    ...(isMac ? { type: 'panel' } : {}),
     show: false, transparent: true, frame: false, hasShadow: false,
     resizable: false, movable: false, minimizable: false, maximizable: false,
     fullscreenable: false, skipTaskbar: true, alwaysOnTop: true, acceptFirstMouse: true,
     backgroundColor: '#00000000',
+    ...WIN_OVERLAY,
     webPreferences: secureWebPrefs(),
   });
   win.setAlwaysOnTop(true, 'screen-saver');
   win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
   win.loadURL(pageURL(spec.page));
-  win.on('blur', () => { if (popupWin === win) closePopup(); });
+  makeGhost(win);
+  // Panels never take focus, so on macOS the mouse-leave watcher (watchPopup) closes them instead of blur.
+  if (!isMac) win.on('blur', () => { if (popupWin === win) closePopup(); });
   win.on('closed', () => { if (popupWins[kind] === win) delete popupWins[kind]; });
   popupWins[kind] = win;
   return win;
@@ -359,7 +485,7 @@ function openPopup(kind) {
     // Show without activating the app: taking focus here is what made macOS jump to another window or
     // desktop (Claude's) whenever Tito was clicked. With no focus there is no blur event, so a small
     // watcher closes the popup once the mouse has left it (or it was never used).
-    win.showInactive();
+    unghost(win);
     watchPopup(win);
   };
   if (win.webContents.isLoading()) win.webContents.once('did-finish-load', reveal); else reveal();
@@ -389,13 +515,14 @@ function closePopup() {
   if (!win) return;
   popupWin = null;
   popupKind = null;
-  if (!win.isDestroyed()) win.hide();
+  ghost(win);
   brain && brain.menuClosed();
 }
 
 // ---------- IPC (only accepted from our own windows) ----------
 const fromPet = e => petWin && e.sender === petWin.webContents;
 const fromPopup = kind => e => { const w = popupWins[kind]; return !!w && !w.isDestroyed() && e.sender === w.webContents; };
+const fromBall = e => ballWin && !ballWin.isDestroyed() && e.sender === ballWin.webContents;
 const fromSettings = e => settingsWin && e.sender === settingsWin.webContents;
 const isNum = n => typeof n === 'number' && Number.isFinite(n);
 
@@ -420,6 +547,17 @@ function registerIpc() {
   ipcMain.on('menu:close', e => { if (fromMenu(e)) closePopup(); });
   ipcMain.on('menu:settings', e => { if (fromMenu(e)) { closePopup(); openSettings(); } });
   ipcMain.on('menu:chat', e => { if (fromMenu(e)) { closePopup(); openChat(); } });
+  ipcMain.on('menu:play', e => { if (fromMenu(e)) { closePopup(); togglePlay(); } });
+  ipcMain.on('ball:grab', (e, p) => { if (fromBall(e) && p && isNum(p.sx) && isNum(p.sy) && ball) ball.grab(p.sx, p.sy); });
+  ipcMain.on('ball:move', (e, p) => { if (fromBall(e) && p && isNum(p.sx) && isNum(p.sy) && ball) ball.dragTo(p.sx, p.sy); });
+  ipcMain.on('ball:release', e => {
+    if (!fromBall(e) || !ball) return;
+    if (ball.release() !== 'click') { clearTimeout(ballClickTimer); ballClickTimer = null; return; }
+    // One click shoots it off (after a beat, to see whether a second click follows); two clicks make it disappear.
+    if (ballClickTimer) { clearTimeout(ballClickTimer); ballClickTimer = null; stopPlay(); return; }
+    ballClickTimer = setTimeout(() => { ballClickTimer = null; if (ball && playOn && ball.held) ball.shoot(); }, 320);
+  });
+  ipcMain.on('ball:hide', e => { if (fromBall(e)) stopPlay(); }); // right click
   ipcMain.on('menu:feed', e => { if (fromMenu(e)) { const r = feedTito(); if (r.ok) closePopup(); else e.sender.send('popup:note', r.message); } });
   ipcMain.handle('companion:get', e => { if (!fromSettings(e)) throw new Error('denied'); return companionInfo(); });
   ipcMain.handle('companion:feed', e => { if (!fromSettings(e)) throw new Error('denied'); return { ...feedTito(), info: companionInfo() }; });
@@ -428,6 +566,15 @@ function registerIpc() {
   ipcMain.handle('chat:get', e => {
     if (!fromChat(e)) throw new Error('denied');
     return { history: chat.history(), status: chatStatus(), expanded: settings.get('chatExpanded') };
+  });
+  ipcMain.handle('chat:command', (e, name) => {
+    if (!fromChat(e)) throw new Error('denied');
+    const c = Commands.find(String(name));
+    if (!c) return { ok: false, message: `I don't know /${String(name).slice(0, 20)}. Type / to see the list.` };
+    if (!brain) return { ok: false, message: 'Tito is not ready yet.' };
+    if (c.kind === 'undo') return { ok: true, message: brain.undo() ? 'Back to normal.' : 'Nothing to undo.' };
+    const ok = brain.command(c);
+    return { ok, message: !ok ? 'He is busy right now, try again in a second.' : c.kind === 'pose' ? `${c.desc}. Click Tito to undo.` : `${c.desc}.` };
   });
   ipcMain.on('chat:send', (e, text) => { if (fromChat(e) && typeof text === 'string') chat.send(text); });
   ipcMain.on('chat:stop', e => { if (fromChat(e)) stopTask(); });
@@ -565,7 +712,7 @@ function chatStatus() {
 
 function startChat() {
   // The Esc key the model itself presses must not trip our own global Stop shortcut.
-  const backend = createMacBackend({ getPetDisplayPoint: () => ({ x: Math.round(brain.footX()), y: Math.round(brain.footY()) }) });
+  const backend = createBackend({ getPetDisplayPoint: () => ({ x: Math.round(brain.footX()), y: Math.round(brain.footY()) }) });
   const rawInput = backend.input;
   backend.input = async (args, stdin) => {
     const esc = args[0] === 'key' && /(^|\+)(esc|escape)$/.test(args[1] || '');
@@ -634,6 +781,7 @@ function ensureConfirmWin() {
   confirmWin.setAlwaysOnTop(true, 'screen-saver');
   confirmWin.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
   confirmWin.loadURL(pageURL('confirm.html'));
+  makeGhost(confirmWin);
   confirmWin.on('closed', () => { confirmWin = null; resolveConfirm('deny'); });
   return confirmWin;
 }
@@ -648,7 +796,7 @@ function askUser(request) {
     const show = () => {
       if (!pendingConfirm || pendingConfirm.id !== request.id) return;
       win.webContents.send('confirm:show', request);
-      win.showInactive();
+      unghost(win);
     };
     if (win.webContents.isLoading()) win.webContents.once('did-finish-load', show); else show();
   });
@@ -658,7 +806,7 @@ function resolveConfirm(answer, id) {
   const p = pendingConfirm;
   if (!p || (id !== undefined && id !== p.id)) return;
   pendingConfirm = null;
-  if (confirmWin && !confirmWin.isDestroyed()) confirmWin.hide();
+  ghost(confirmWin);
   p.resolve(answer === 'allow' ? 'allow' : 'deny');
 }
 
@@ -680,7 +828,7 @@ function resizeChat() {
   const x = Math.min(a.x + a.width - W, Math.max(a.x, b.x));
   const y = Math.min(a.y + a.height - H, Math.max(a.y, b.y + b.height - H));
   chatWin.setMinimumSize(280, settings.get('chatExpanded') ? 360 : 150);
-  chatWin.setBounds({ x, y, width: W, height: H }, true);
+  if (isWin) chatWin.setContentBounds({ x, y, width: W, height: H }); else chatWin.setBounds({ x, y, width: W, height: H }, true);
   chatWin.webContents.send('chat:expanded', settings.get('chatExpanded'));
 }
 
@@ -700,8 +848,10 @@ function openChat() {
       vibrancy: 'under-window', visualEffectState: 'active',
       titleBarStyle: 'hiddenInset', transparent: true, backgroundColor: '#00000000',
     } : {}),
+    ...(isWin ? { ...windowedOpts(), maximizable: false } : {}),
     webPreferences: secureWebPrefs(),
   });
+  if (isWin) chatWin.setMenu(null);
   floatEverywhere(chatWin); // above apps on every desktop, below Tito
   chatWin.loadURL(pageURL('chat.html'));
   chatWin.once('ready-to-show', () => { app.focus({ steal: true }); chatWin.show(); chatWin.focus(); });
@@ -718,8 +868,10 @@ function openSettings() {
       vibrancy: 'under-window', visualEffectState: 'active',
       titleBarStyle: 'hiddenInset', transparent: true, backgroundColor: '#00000000',
     } : {}),
+    ...(isWin ? { ...windowedOpts(), maximizable: false } : {}),
     webPreferences: secureWebPrefs(),
   });
+  if (isWin) settingsWin.setMenu(null);
   floatEverywhere(settingsWin);
   settingsWin.loadURL(pageURL('settings.html'));
   settingsWin.once('ready-to-show', () => { app.focus({ steal: true }); settingsWin.show(); settingsWin.focus(); });
@@ -728,11 +880,12 @@ function openSettings() {
 
 // ---------- menu-bar icon (Dock icon is hidden, so this is how you quit) ----------
 function createTray() {
-  const icon = nativeImage
-    .createFromPath(path.join(ROOT, 'assets/sprites/sentado/sentado_0.png'))
-    .resize({ height: 18 });
+  const icon = isWin
+    ? nativeImage.createFromPath(path.join(ROOT, 'assets/tray-win.png')) // 16/32/48 px variants, picked by display scale
+    : nativeImage.createFromPath(path.join(ROOT, 'assets/sprites/sentado/sentado_0.png')).resize({ height: 18 });
   tray = new Tray(icon);
   tray.setToolTip('Tito');
+  if (isWin) tray.on('click', () => tray.popUpContextMenu()); // left click opens the menu too, like the right click
   refreshTrayMenu();
 }
 // Rebuilt whenever stay-still changes so the checkbox always matches Settings.
@@ -744,6 +897,10 @@ function refreshTrayMenu() {
     { label: 'Settings…', click: openSettings },
     { label: 'Size…', click: () => openPopup('size') },
     { label: 'Feed Tito', click: () => feedTito() },
+    { label: 'Play ball', type: 'checkbox', checked: playOn, click: () => togglePlay() },
+    // Windows: a desktop pet should come back after a restart. (Only the installed app, never a dev run.)
+    ...(isWin && app.isPackaged ? [{ label: 'Start with Windows', type: 'checkbox', checked: app.getLoginItemSettings().openAtLogin,
+      click: item => app.setLoginItemSettings({ openAtLogin: item.checked }) }] : []),
     ...(settings.get('tasks').length ? [{ label: `Pause scheduled tasks (${settings.get('tasks').length})`, type: 'checkbox',
       checked: settings.get('tasksPaused'), click: item => settings.set('tasksPaused', item.checked) }] : []),
     { label: `Stay still (${pose ? pose.label.toLowerCase() : 'sitting'})`, type: 'checkbox',
@@ -755,6 +912,7 @@ function refreshTrayMenu() {
 
 app.whenReady().then(() => {
   if (isMac && app.dock) app.dock.hide();
+  if (!isMac) Menu.setApplicationMenu(null); // no File/Edit menu bar on Windows; Tito lives in the tray
   serveAppFiles();
   settings = new Settings();
   if (process.env.TITO_DEV_SIZE) settings.data.size = +process.env.TITO_DEV_SIZE; // dev: try a size without touching the saved one
@@ -785,6 +943,8 @@ app.whenReady().then(() => {
   if (brain) { brain.setCompanion(companionState()); brain.setReactions(settings.get('reactions')); }
   ensurePopup('menu');
   ensurePopup('size');
+  createBallWindow();
+  ensureConfirmWin();
   startWindowFeed();
   if (process.env.TITO_SMOKE) {
     require('./smoke').run({
@@ -794,6 +954,12 @@ app.whenReady().then(() => {
       getPopup: () => ({ win: popupWin, kind: popupKind }), getSettingsWin: () => settingsWin,
     }).catch(e => { console.log('SMOKE ERROR', e && e.stack); app.exit(3); });
   }
+  // Dev: TITO_DEV_POPUP=1 opens the menu pill a few seconds in and reports whether it is really on screen.
+  if (process.env.TITO_DEV_POPUP) setTimeout(() => {
+    brain.setStay('sentado');
+    brain.click();
+    setTimeout(() => { const w = popupWins.menu; console.log('POPUP', w && !w.isDestroyed() ? JSON.stringify({ visible: w.isVisible(), bounds: w.getBounds(), loading: w.webContents.isLoading(), url: w.webContents.getURL() }) : 'none'); }, 1500);
+  }, 4000);
   if (process.env.TITO_RECORD) require('./record').run({ app, petWin, brain });
   // Dev: TITO_PROBE=1 logs Electron's idea of the pet window every second (to compare with the system's).
   if (process.env.TITO_PROBE_EDGE) setTimeout(() => { brain.setStay('sentado'); brain.x = -9999; brain._commit(); console.log('EDGE forced, brain.x =', brain.x); }, 3000);

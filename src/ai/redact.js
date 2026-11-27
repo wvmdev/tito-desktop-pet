@@ -44,4 +44,4 @@ function redactText(text, secrets = []) {
   return { text: s, count };
 }
 
-module.exports = { SECRET_PATTERNS, patternsWith, redactText };
+module.exports = { SECRET_PATTERNS, patternsWith, redactText, toRegExp };

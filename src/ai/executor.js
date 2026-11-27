@@ -18,17 +18,36 @@ const MAX_LIST = 200;
 const SENSITIVE = [
   /\/\.ssh(\/|$)/, /\/\.gnupg(\/|$)/, /\/\.aws(\/|$)/, /\/\.kube(\/|$)/, /\/\.docker\/config\.json$/,
   /\/\.netrc$/, /\/\.npmrc$/, /\/\.env(\.[^/]*)?$/, /\/\.git-credentials$/,
-  /\/Library\/Keychains(\/|$)/, /\/Library\/Cookies(\/|$)/, /\/Library\/Application Support\/tito-desktop-pet(\/|$)/,
+  /\/Library\/Keychains(\/|$)/, /\/Library\/Cookies(\/|$)/, /\/Library\/Application Support\/(tito-desktop-pet|Tito)(\/|$)/,
   /\/Library\/Application Support\/[^/]*\/(Cookies|Login Data|Local Storage)(\/|$)/,
   /\/(id_rsa|id_ed25519|id_ecdsa)(\.pub)?$/, /\.(pem|p12|pfx|keychain|keychain-db)$/i,
+  // Windows: Tito's own data, other apps' saved logins and cookies, credential and key stores, the registry hives.
+  /\/AppData\/(Roaming|Local)\/(tito-desktop-pet|Tito)(\/|$)/,
+  /\/AppData\/(Roaming|Local)\/Microsoft\/(Credentials|Protect|Vault|Crypto|SystemCertificates)(\/|$)/,
+  /\/AppData\/Local\/[^/]*\/[^/]*\/User Data(\/|$)/, /\/AppData\/Roaming\/Mozilla\/Firefox\/Profiles(\/|$)/,
+  /\/AppData\/(Roaming|Local)\/[^/]*\/(Cookies|Login Data|Local Storage|Network)(\/|$)/,
+  /\/NTUSER\.DAT[^/]*$/i, /\/\.azure(\/|$)/, /\/\.config\/gcloud(\/|$)/,
 ];
+// Path rules, built per platform so both can be tested anywhere. Paths are compared with forward slashes,
+// and ignoring case on Windows (where the disk does too).
+function makePathRules(windows) {
+  const normPath = p => (windows ? p.replace(/\\/g, '/') : p);
+  return {
+    isSensitive: p => { const n = normPath(p); return SENSITIVE.some(re => (windows ? new RegExp(re.source, 'i') : re).test(n)); },
+    sameOrInside: (p, root) => {
+      const a = windows ? normPath(p).toLowerCase() : p, b = windows ? normPath(root).toLowerCase() : root;
+      return a === b || a.startsWith(b.endsWith('/') ? b : b + '/');
+    },
+  };
+}
+const { isSensitive, sameOrInside } = makePathRules(process.platform === 'win32');
 
 class Executor {
   constructor({ backend, roots = [os.homedir()], tasks = null }) {
     this.backend = backend;
     this.openSettleMs = 900;
     this.tasks = tasks; // TaskScheduler, for the schedule_task / list_tasks / cancel_task tools
-    this.roots = roots.map(r => fs.realpathSync(r));
+    this.roots = roots.map(r => fs.realpathSync.native(r));
     this.shot = null; // geometry of the latest screenshot, for mapping click coordinates
   }
 
@@ -36,14 +55,14 @@ class Executor {
   _resolve(p, { mustExist = true } = {}) {
     if (typeof p !== 'string' || !p.trim()) throw new Error('No path given.');
     let full = p.trim();
-    if (full === '~' || full.startsWith('~/')) full = path.join(os.homedir(), full.slice(1));
+    if (full === '~' || full.startsWith('~/') || full.startsWith('~\\')) full = path.join(os.homedir(), full.slice(1));
     full = path.resolve(os.homedir(), full);
     // Resolve symlinks on the deepest existing ancestor so links can't lead outside the roots.
     let probe = full;
     while (!fs.existsSync(probe) && path.dirname(probe) !== probe) probe = path.dirname(probe);
-    const real = path.join(fs.realpathSync(probe), path.relative(probe, full));
-    if (!this.roots.some(r => real === r || real.startsWith(r + path.sep))) throw new Error("That path is outside the user's home folder, which Tito may not touch.");
-    if (SENSITIVE.some(re => re.test(real))) throw new Error('That location holds credentials or private app data; Tito may not access it.');
+    const real = path.join(fs.realpathSync.native(probe), path.relative(probe, full));
+    if (!this.roots.some(r => sameOrInside(real, r))) throw new Error("That path is outside the user's home folder, which Tito may not touch.");
+    if (isSensitive(real)) throw new Error('That location holds credentials or private app data; Tito may not access it.');
     if (mustExist && !fs.existsSync(real)) throw new Error('No such file or folder.');
     return real;
   }
@@ -124,7 +143,7 @@ class Executor {
           const p = this._resolve(input.path);
           if (!fs.statSync(p).isDirectory()) throw new Error('That is a file, not a folder.');
           const names = fs.readdirSync(p, { withFileTypes: true })
-            .filter(d => !SENSITIVE.some(re => re.test(path.join(p, d.name))))
+            .filter(d => !isSensitive(path.join(p, d.name)))
             .map(d => (d.isDirectory() ? `${d.name}/` : d.name)).sort();
           const shown = names.slice(0, MAX_LIST);
           return { text: clean(shown.join('\n') + (names.length > shown.length ? `\n… and ${names.length - shown.length} more` : '')) || '(empty folder)' };
@@ -169,4 +188,4 @@ class Executor {
   }
 }
 
-module.exports = { Executor, SENSITIVE };
+module.exports = { Executor, SENSITIVE, makePathRules };

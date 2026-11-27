@@ -5,6 +5,9 @@ const ICON = {
   sleepy: 'durmiendo', curious: 'mirando_arriba', grumpy: 'enfadado',
 };
 if (window.tito.platform !== 'darwin') document.body.classList.add('no-vibrancy');
+if (window.tito.platform === 'win32') document.body.classList.add('win');
+const COMPUTER = window.tito.platform === 'win32' ? 'PC' : 'Mac';
+{ const n = document.getElementById('keystoreNote'); if (n && window.tito.platform === 'win32') n.textContent = 'Keys are encrypted with Windows (the same protection that guards your saved passwords)'; }
 
 async function init() {
   const { personalities, settings, sizeRange, stayPoses, mood, ai, security, tasks, emotions, companion } = await api.get();
@@ -246,7 +249,7 @@ async function init() {
     $('keyPage').hidden = !pi.hasKeyPage;
     // Local servers need no key.
     $('localNote').hidden = !pi.local;
-    $('localText').textContent = pi.local ? `No key needed. Make sure ${pi.label.replace(/ \(.*/, '')} is running on this Mac.` : '';
+    $('localText').textContent = pi.local ? `No key needed. Make sure ${pi.label.replace(/ \(.*/, '')} is running on this ${COMPUTER}.` : '';
     $('keyRow').hidden = pi.local;
     $('keyStateRow').hidden = pi.local;
     const k = aiState.keys[p] || { saved: false };

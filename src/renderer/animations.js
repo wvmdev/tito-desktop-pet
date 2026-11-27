@@ -18,7 +18,7 @@ const ANIMATIONS = [
 const NATIVE_FACING = {
   caminando: 'R', corriendo: 'R', mirando_derecha: 'R', jugando_pelota: 'R',
   jugando: 'R', curioso: 'R', dando_amor: 'R', celebrando: 'R', // mixed-direction loops, mostly right
-  durmiendo: 'N', escalando: 'N', escondido: 'N', panza_arriba: 'N', teletransportarse: 'N',
+  durmiendo: 'N', escondido: 'N', panza_arriba: 'N', teletransportarse: 'N',
 };
 const nativeFacing = name => NATIVE_FACING[name] || 'L';
 

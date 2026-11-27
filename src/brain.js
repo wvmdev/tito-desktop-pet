@@ -27,6 +27,10 @@ const HEADROOM = 118;    // px above a window top needed for Tito's body (walkin
 const EDGE_PAD = 12;     // keep this far from a window that covers part of an edge
 const MIN_SEGMENT = 40;  // a visible stretch of edge must be at least this wide (px at size 1)
 const CLIMB_AT_WALL = 0.5; // meeting a climbable window while on the move: climb it half the time
+const FETCH_RUN = 1.25;  // he runs after a ball faster than he normally runs
+const FETCH_GIVE_UP = 40000; // ms
+const JUMP_UP = 170;     // px (size 1): the highest ledge he can jump up to
+const JUMP_ACROSS = 420; // px (size 1): the widest gap he can jump
 const MOUSE_CHANCE = 0.2; // 1 in 5 walks/runs head for the mouse pointer (unless an app is full screen)
 
 // Animation playback rates chosen so feet roughly match ground speed.
@@ -75,6 +79,11 @@ class Brain extends EventEmitter {
     this.reactionsOn = true;    // play with the cursor, dance to music
     this.music = false;
     this._cp = { at: 0, prev: null, shyAt: 0, playAt: 0 };
+    this.getBall = null;        // () => ball state from ball.js, or null (play mode)
+    this.playing = false;       // play mode on
+    this.fetching = false;      // chasing the ball right now
+    this.cmdPose = null;        // a pose ordered from the chat (/sleep...): held until he is clicked
+    this._fetchSince = 0;
     this.setPersonality(personality);
     this._loop = setInterval(() => this._tick(), 16);
   }
@@ -211,7 +220,7 @@ class Brain extends EventEmitter {
       this._commit();
     }
   }
-  _standsOnSurface() { return !['held', 'fall', 'climb', 'teleport', 'init'].includes(this.mode); }
+  _standsOnSurface() { return !['held', 'fall', 'climb', 'teleport', 'jump', 'init'].includes(this.mode); }
   _setSurface(s) {
     this.surface = s.kind === 'window' ? { kind: 'window', id: s.id, lastX: this._win(s.id)?.x } : { kind: 'ground' };
   }
@@ -246,6 +255,8 @@ class Brain extends EventEmitter {
   start() { this.y = this.standY(); this._commit(); this.idle({ forever: !!this.stayPose }); }
 
   next() {
+    if (this.cmdPose) return this._holdPose();
+    if (this.fetching) return this._fetchStep();
     if (this.stayPose) return this.idle({ forever: true });
     if (this.mode !== 'idle') return this.idle(); // after any move, settle into an idle
     // Low-energy moods idle more and move less.
@@ -330,7 +341,7 @@ class Brain extends EventEmitter {
   // One walk/run in five heads for the mouse pointer, stopping beside it. Never while an app is
   // full screen, never when the pointer is already close or on another display.
   _goToMouse(spec) {
-    if (!this.getCursor || Math.random() >= mouseChance(this.bond, MOUSE_CHANCE)) return false;
+    if (!this.getCursor || this.fetching || Math.random() >= mouseChance(this.bond, MOUSE_CHANCE)) return false;
     if (this.fullscreenHere()) return false;
     const c = this.getCursor();
     const a = this.area();
@@ -545,7 +556,7 @@ class Brain extends EventEmitter {
   }
 
   // ---------- teleport (teletransportarse): vanish, reappear on another surface ----------
-  teleport() {
+  teleport(dest = null) {
     this._clear();
     this._setMode('teleport');
     const speed = 4; // ~1.1s to vanish, ~1.1s to reappear
@@ -558,8 +569,11 @@ class Brain extends EventEmitter {
         const segs = this._edgeSegments(w).filter(([x0, x1]) => this._edgeHeightOk(w, (x0 + x1) / 2));
         if (segs.length) spots.push({ kind: 'window', id: w.id, segs });
       }
-      const spot = pick(spots);
-      if (spot.kind === 'window') {
+      const spot = dest ? { kind: dest.surface === 'ground' ? 'ground' : 'window', id: dest.surface, segs: null } : pick(spots);
+      if (dest) {
+        this._setSurface(spot);
+        this.x = dest.x - this.W / 2;
+      } else if (spot.kind === 'window') {
         const seg = pick(spot.segs);
         this.x = rand(seg[0], seg[1]) - this.W / 2;
       } else {
@@ -626,7 +640,7 @@ class Brain extends EventEmitter {
   // A one-off pose (a startle, a dance, a nudge), then back to normal. Never interrupts a drag, a
   // fall, a climb, a menu or sleep, and never breaks "stay still".
   react(anims, { loops = 2, speed = 2 } = {}) {
-    if (this.stayPose || !this._autonomous()) return false;
+    if (this.fetching || this.cmdPose || this.stayPose || !this._autonomous()) return false;
     this._clear();
     this.y = this.standY();
     this._commit();
@@ -651,7 +665,7 @@ class Brain extends EventEmitter {
     const c = this.getCursor();
     const prev = cp.prev;
     cp.prev = c;
-    if (!prev || !this.reactionsOn || this.stayPose || !this._autonomous()) return;
+    if (!prev || !this.reactionsOn || this.stayPose || this.fetching || this.cmdPose || !this._autonomous()) return;
     const speed = Math.hypot(c.x - prev.x, c.y - prev.y) / dt;
     const dx = c.x - this.footX();
     const dy = c.y - (this.footY() - 50 * this.size);
@@ -719,7 +733,10 @@ class Brain extends EventEmitter {
   }
 
   // ---------- click: react once, then ask main to open the popup ----------
-  click() { this._interact('openMenu', this.bond >= 40 ? ['dando_amor', 'saludando'] : ['sorprendido', 'saludando', 'dando_amor']); }
+  click() {
+    if (this.cmdPose) { this.undo(); return; } // clicking him undoes a chat command
+    this._interact('openMenu', this.bond >= 40 ? ['dando_amor', 'saludando'] : ['sorprendido', 'saludando', 'dando_amor']);
+  }
   dblclick() { this._interact('openSize', ['saludando']); }
 
   _interact(event, reactions) {
@@ -749,6 +766,7 @@ class Brain extends EventEmitter {
 
   // ---------- drag: pick up, carry, drop, fall ----------
   dragStart() {
+    this.cmdPose = null;
     if (this.mode === 'menu') this.emit('closeMenu');
     this._clear();
     this._setMode('held');
@@ -813,6 +831,7 @@ class Brain extends EventEmitter {
 
   _land(hard) {
     this._clear();
+    if (this.fetching) { this._setMode('land', { hard: false, surface: this.surface.kind }); this._after(120, () => { this.mode = 'idle'; this.next(); }); return; }
     this._setMode('land', { hard, surface: this.surface.kind });
     if (hard) {
       // resbalando frames 5-7: the crash/stumble on impact.
@@ -824,6 +843,276 @@ class Brain extends EventEmitter {
       this._anim('sacudiendose', speed);
       this._after(LOOP_MS / speed, () => { this.mode = 'idle'; this.next(); });
     }
+  }
+
+  // ---------- chat commands (/sleep, /run, /happy ...) ----------
+  // A 'pose' command holds that pose until he is clicked (or told /stop); an 'act' runs once.
+  command(spec) {
+    if (['held', 'fall', 'climb', 'teleport', 'jump', 'menu'].includes(this.mode)) return false;
+    this.fetching = false;
+    this.cmdPose = null;
+    if (spec.kind === 'act') {
+      this._clear();
+      if (this.mode === 'sleep') this.mode = 'idle';
+      if (spec.act === 'hops') this.hops(); else this[spec.act]();
+      return true;
+    }
+    this.cmdPose = spec.anim;
+    this._holdPose();
+    return true;
+  }
+  _holdPose() {
+    this._clear();
+    this.y = this.standY();
+    this._commit();
+    this._setMode('idle', { name: this.cmdPose, cmd: true });
+    this._anim(this.cmdPose, this.cmdPose === 'durmiendo' ? 0.8 : this.p.animSpeed);
+  }
+  undo() {
+    if (!this.cmdPose) return false;
+    const was = this.cmdPose;
+    this.cmdPose = null;
+    this._clear();
+    if (was === 'durmiendo') { this.mode = 'sleep'; this.wake(); } else { this._setMode('idle'); this.next(); }
+    return true;
+  }
+
+  // ---------- play mode: fetch the ball ----------
+  // The ball (src/ball.js) rests on the same visible surfaces Tito does. When it is thrown he runs
+  // to it; if it landed on another layer he climbs up the side of a window, jumps across a gap or
+  // down from a ledge, and as a last resort teleports. Catching it (even in the air, with a leap)
+  // ends the chase: he plays with it a moment and drops it at his feet.
+
+  // First surface a ball's centre-line meets going down from y0 to y1 at px: the top edge of any window
+  // that is visible there (in whatever layer), else the floor of that display. No ledge inset.
+  ballSurface(px, y0, y1) {
+    const a = screen.getDisplayNearestPoint({ x: Math.round(px), y: Math.round(y1) }).workArea;
+    let best = null;
+    this.windows.forEach((w, i) => {
+      if (w.y < y0 || w.y > y1 || px < w.x || px >= w.x + w.w) return;
+      if (w.y < a.y + 40 || w.y > a.y + a.height - 20) return; // maximised / hidden behind the Dock: no ledge
+      if (this._occluded(i, px, w.y + 1)) return;
+      if (!best || w.y < best.top) best = { id: w.id, top: w.y };
+    });
+    if (best) return best;
+    const floor = a.y + a.height;
+    return floor >= y0 && floor <= y1 ? { id: 'ground', top: floor } : null;
+  }
+  ballWorld() {
+    return {
+      ballSurface: (px, y0, y1) => this.ballSurface(px, y0, y1),
+      windowById: id => this._win(id) || null,
+      area: (px, py) => screen.getDisplayNearestPoint({ x: Math.round(px), y: Math.round(py) }).workArea,
+    };
+  }
+
+  startPlay() { this.playing = true; }
+  stopPlay() {
+    this.playing = false;
+    if (this.fetching) { this.fetching = false; if (this._autonomous()) { this._clear(); this.idle(); } }
+  }
+  // The user threw (or dropped) the ball: go and get it.
+  ballThrown() {
+    if (!this.playing || !this.getBall) return;
+    this.cmdPose = null;
+    this.fetching = true;
+    this._fetchSince = performance.now();
+    if (this._autonomous() || ['land', 'sleep', 'wake'].includes(this.mode)) { this._clear(); this._fetchStep(); }
+    // Anything else (carried, falling, climbing, menu...) carries on into the chase through next().
+  }
+
+  _here() { return this.surface.kind === 'window' ? this.surface.id : 'ground'; }
+  _giveUp() { this.fetching = false; this._clear(); this.idle(); }
+
+  // Decide the next leg of the chase.
+  _fetchStep() {
+    const b = this.getBall && this.getBall();
+    if (!this.fetching || !b || b.held) { this.fetching = false; return this.idle(); }
+    if (performance.now() - this._fetchSince > FETCH_GIVE_UP) return this._giveUp();
+    const goal = b.landing;
+    if (!goal) return this._giveUp();
+    if (goal.surface === this._here()) return this._chase();
+    return this._changeLayer(goal);
+  }
+
+  // Same layer as the ball: run after it and catch it.
+  _chase() {
+    this._clear();
+    this.y = this.standY();
+    this._setMode('run', { fetch: true });
+    this._anim('corriendo', RUN_ANIM);
+    let waiting = false;
+    this._tickFn = dt => {
+      const b = this.getBall && this.getBall();
+      if (!b || b.held) { this.fetching = false; this.idle(); return; }
+      if (performance.now() - this._fetchSince > FETCH_GIVE_UP) { this._giveUp(); return; }
+      if (!b.landing || b.landing.surface !== this._here()) { this._fetchStep(); return; } // it went to another layer
+      const s = this.size;
+      const fx = this.footX();
+      const dx = b.x - fx;
+      const [lo, hi] = this.xBounds();
+      const pinned = (dx > 0 && this.x >= hi - 0.5) || (dx < 0 && this.x <= lo + 0.5); // can't get any closer
+      const reach = pinned ? 95 * s : 38 * s;
+      const above = this.footY() - b.y; // how high the ball is over his feet
+      if (Math.abs(dx) < reach && above > -20 * s && above < 190 * s) { this._catch(above > 70 * s); return; }
+      const goalX = b.airborne ? b.landing.x : b.x;
+      const gx = goalX - fx;
+      if (b.airborne && Math.abs(gx) < 14 * s) { // under it: wait, eyes up
+        if (!waiting) { waiting = true; this.facing = dx < 0 ? 'left' : 'right'; this._anim('mirando_arriba', 1.5); }
+        return;
+      }
+      const dir = gx < 0 ? -1 : 1;
+      if (waiting || this.anim !== 'corriendo' || this.facing !== (dir < 0 ? 'left' : 'right')) {
+        waiting = false;
+        this.facing = dir < 0 ? 'left' : 'right';
+        this._anim('corriendo', RUN_ANIM);
+      }
+      this.x += dir * Math.min(Math.abs(gx), RUN_SPEED * FETCH_RUN * s * dt);
+      if (this._lostFooting()) { this._commit(); this._fall(); return; }
+      this._commit();
+    };
+  }
+
+  // Straight run to a spot on this layer (no wall logic: while fetching he doesn't turn back).
+  _runTo(footX, onArrive) {
+    this._clear();
+    const [lo, hi] = this.xBounds();
+    const target = Math.min(hi, Math.max(lo, footX - this.W / 2));
+    const dir = Math.sign(target - this.x) || 1;
+    this.facing = dir < 0 ? 'left' : 'right';
+    this.y = this.standY();
+    this._setMode('run', { fetch: true, target: Math.round(target) });
+    this._anim('corriendo', RUN_ANIM);
+    this._tickFn = dt => {
+      this.x += dir * RUN_SPEED * FETCH_RUN * this.size * dt;
+      const arrived = (target - this.x) * dir <= 0;
+      if (arrived) this.x = target;
+      if (this._lostFooting()) { this._commit(); this._fall(); return; }
+      this._commit();
+      if (arrived) onArrive();
+    };
+  }
+
+  // The ball is on another layer: climb a window's side, jump, or (if nothing works) teleport.
+  _changeLayer(goal) {
+    const s = this.size;
+    const w = goal.surface === 'ground' ? null : this._win(goal.surface);
+    if (goal.surface !== 'ground' && !w) return this._fetchTeleport(goal);
+
+    if (this._here() === 'ground') {
+      // Up the side of the window the ball is on.
+      const fx = this.footX();
+      const opts = ['left', 'right'].map(side => this._climbInfo(w, side, this.floorTop())).filter(Boolean)
+        .sort((p, q) => Math.abs(p.sx - fx) - Math.abs(q.sx - fx));
+      const t = opts[0];
+      if (!t) return this._fetchTeleport(goal);
+      const outside = t.side === 'left' ? -1 : 1;
+      return this._runTo(t.sx + outside * 18 * s, () => this._climbUp(t));
+    }
+
+    // On a window: find the spot to land on, and the point of this ledge to take off from.
+    const spot = this._landingSpot(goal, w);
+    const here = this._win(this.surface.id);
+    if (!spot || !here) return this._fetchTeleport(goal);
+    const [lo, hi] = this.xBounds();
+    const takeoff = Math.min(hi, Math.max(lo, spot.x - this.W / 2)) + this.W / 2; // nearest foot x on this ledge
+    const gap = Math.abs(spot.x - takeoff);
+    const rise = this.footY() - spot.top;
+    if (gap <= JUMP_ACROSS * s && rise <= JUMP_UP * s) {
+      return this._runTo(takeoff, () => this._jump(spot));
+    }
+    // Too far or too high from here: hop down to the floor first, then climb (or run) from there.
+    const dir = spot.x >= takeoff ? 1 : -1;
+    const a = this.area();
+    const reach = (goal.surface === 'ground' ? JUMP_ACROSS * 0.9 : 140) * s;
+    const dropX = Math.min(a.x + a.width - 40, Math.max(a.x + 40, takeoff + dir * reach));
+    return this._runTo(takeoff, () => this._jump({ surface: 'ground', top: this.floorTop(), x: dropX }));
+  }
+
+  // Where to land on the goal layer: the visible part of its top nearest the goal x.
+  _landingSpot(goal, w) {
+    if (goal.surface === 'ground') {
+      const a = this.area();
+      return { surface: 'ground', top: this.floorTop(), x: Math.min(a.x + a.width - 30, Math.max(a.x + 30, goal.x)) };
+    }
+    const segs = this._edgeSegments(w).filter(([x0, x1]) => this._edgeHeightOk(w, (x0 + x1) / 2));
+    if (!segs.length) return null;
+    let best = null;
+    for (const [x0, x1] of segs) {
+      const x = Math.min(x1 - 6, Math.max(x0 + 6, goal.x));
+      if (!best || Math.abs(x - goal.x) < Math.abs(best.x - goal.x)) best = { surface: w.id, top: w.y, x };
+    }
+    return best;
+  }
+
+  // A leap (saltando, airborne frames) along an arc from where he stands to a spot { surface, top, x }.
+  _jump(spot) {
+    this._clear();
+    const s = this.size;
+    const x0 = this.footX(), y0 = this.footY();
+    const x1 = spot.x, y1 = spot.top;
+    const rise = Math.max(0, y0 - y1);
+    const peak = Math.max(60, rise + 55) * s;
+    const dur = Math.min(1.25, Math.max(0.5, 0.42 + Math.abs(x1 - x0) / 800 + Math.max(0, y1 - y0) / 2400)) * 1000;
+    this.facing = x1 < x0 ? 'left' : 'right';
+    this._setMode('jump', { to: spot.surface });
+    this._anim('saltando', 2.4, { frames: [1, 2, 3], loop: true });
+    const t0 = performance.now();
+    this._tickFn = (_dt, now) => {
+      const t = Math.min(1, (now - t0) / dur);
+      const fx = x0 + (x1 - x0) * t;
+      const fy = y0 + (y1 - y0) * t - peak * 4 * t * (1 - t);
+      this.x = fx - this.W / 2;
+      this.y = fy - this.H;
+      this._commit();
+      if (t >= 1) {
+        this._setSurface(spot.surface === 'ground' ? { kind: 'ground' } : { kind: 'window', id: spot.surface });
+        this.y = this.standY();
+        this._commit();
+        this._land(false);
+      }
+    };
+  }
+
+  _fetchTeleport(goal) {
+    const w = goal.surface === 'ground' ? null : this._win(goal.surface);
+    const x = w ? Math.min(w.x + w.w - 60, Math.max(w.x + 60, goal.x)) : goal.x;
+    this.teleport({ surface: goal.surface, x });
+  }
+
+  // Got it! A leap if it was up in the air, then a little play with it, then it is dropped at his feet.
+  _catch(leap) {
+    this._clear();
+    this.fetching = false;
+    const b = this.getBall && this.getBall();
+    this.facing = b && b.x < this.footX() ? 'left' : 'right';
+    this.emit('catch');
+    this.emit('pet');
+    const celebrate = () => {
+      this._clear();
+      this.y = this.standY();
+      this._commit();
+      const speed = 2;
+      this._setMode('idle', { name: 'jugando_pelota', catch: true });
+      this._anim('jugando_pelota', speed);
+      this._after((2 * LOOP_MS) / speed, () => {
+        const dir = this.facing === 'left' ? -1 : 1;
+        this.emit('release', { x: this.footX() + dir * 46 * this.size, y: this.footY() - 30 * this.size });
+        this.next();
+      });
+    };
+    if (!leap) return celebrate();
+    const base = this.y;
+    const t0 = performance.now();
+    const dur = 420;
+    this._setMode('jump', { catch: true });
+    this._anim('saltando', 2.4, { frames: [1, 2, 3], loop: true });
+    this._tickFn = (_dt, now) => {
+      const t = Math.min(1, (now - t0) / dur);
+      this.y = base - 78 * this.size * 4 * t * (1 - t);
+      this._commit();
+      if (t >= 1) { this.y = base; this._commit(); this._setMode('idle'); celebrate(); }
+    };
   }
 
   destroy() { this._clear(); clearInterval(this._loop); }
